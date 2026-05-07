@@ -1,0 +1,2 @@
+"""SupportSmith application package."""
+

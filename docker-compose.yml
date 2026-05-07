@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: supportsmith
+      POSTGRES_USER: supportsmith
+      POSTGRES_PASSWORD: supportsmith
+    ports:
+      - "55432:5432"
+    volumes:
+      - supportsmith-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supportsmith -d supportsmith"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    environment:
+      SUPPORTSMITH_ENVIRONMENT: local
+      DATABASE_URL: postgresql://supportsmith:supportsmith@postgres:5432/supportsmith
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    build: .
+    command: ["uv", "run", "supportsmith-migrate"]
+    environment:
+      SUPPORTSMITH_ENVIRONMENT: local
+      DATABASE_URL: postgresql://supportsmith:supportsmith@postgres:5432/supportsmith
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  supportsmith-postgres-data:
