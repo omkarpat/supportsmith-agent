@@ -173,12 +173,20 @@ Phase 3 uses **Chat Completions and Embeddings** (`openai.AsyncOpenAI`, wrapped 
 
 ### Test policy
 
-All `tests/` mock OpenAI:
+The default `uv run pytest` mocks OpenAI:
 
-- Adapter tests (`test_openai_adapter.py`) mock `openai.AsyncOpenAI.chat.completions.create`.
+- Adapter tests (`test_openai_adapter.py`) mock `openai.AsyncOpenAI.chat.completions.create` and `embeddings.create`.
 - Graph and node tests (`test_agent_graph.py`, `test_conversations.py`, `test_agent_wiring.py`) inject `ScriptedLLMClient` at the `LLMClient` Protocol seam.
 
-Live-OpenAI exercises live in `evals/` and are deferred to a later phase.
+One opt-in end-to-end smoke test (`tests/test_agent_live.py`) hits the real OpenAI API against the seeded compose Postgres. It's marked `live` and excluded from the default run via `addopts = ["-m", "not live"]`. To run it manually:
+
+```bash
+docker compose up -d   # postgres healthy + auto-seed with live embeddings
+SUPPORTSMITH_TEST_DATABASE_URL=postgresql://supportsmith:supportsmith@localhost:55432/supportsmith \
+    uv run --env-file .env pytest -m live tests/test_agent_live.py
+```
+
+Broader live behavior tests (eval suites) land in `evals/` in a later phase.
 
 ## Seeding The Knowledge Base
 

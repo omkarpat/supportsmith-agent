@@ -62,3 +62,7 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = ["-m", "not live"]
+markers = [
+    "live: hits the real OpenAI API (and a seeded Postgres). Opt in with `-m live`.",
+]
