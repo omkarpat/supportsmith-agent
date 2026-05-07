@@ -7,6 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.14.0",
     "fastapi>=0.115.6",
+    "langchain-core>=0.3.0",
+    "langgraph>=0.2.0",
     "openai>=1.59.6",
     "pgvector>=0.3.6",
     "psycopg[binary]>=3.2.3",
@@ -49,6 +51,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 plugins = []
+explicit_package_bases = true
+namespace_packages = true
 
 [[tool.mypy.overrides]]
 module = ["pgvector", "pgvector.*"]

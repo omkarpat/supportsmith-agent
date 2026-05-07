@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.harness import AgentRequest, AgentResponse, PhaseOneAgent
+from app.agent.harness import Agent, AgentRequest, AgentResponse
 
 router = APIRouter(tags=["conversations"])
 
@@ -33,7 +33,7 @@ async def run_agent(
     message: str,
 ) -> AgentResponse:
     """Route a message through the configured support agent."""
-    agent: PhaseOneAgent = request.app.state.agent
+    agent: Agent = request.app.state.agent
     return await agent.respond(AgentRequest(conversation_id=conversation_id, message=message))
 
 

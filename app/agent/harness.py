@@ -1,11 +1,19 @@
-"""Phase 1 agent harness."""
+"""Public agent contracts: request/response types and the Agent Protocol."""
 
-from typing import Literal
-from uuid import uuid4
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-AgentSource = Literal["agent", "faq", "compliance", "general", "human"]
+AgentSource = Literal[
+    "agent",
+    "faq",
+    "compliance",
+    "general",
+    "human",
+    "clarify",
+    "escalate",
+    "refuse",
+]
 
 
 class CostSummary(BaseModel):
@@ -41,23 +49,12 @@ class AgentResponse(BaseModel):
     cost: CostSummary = Field(default_factory=CostSummary)
 
 
-class PhaseOneAgent:
-    """Deterministic placeholder agent used while graph orchestration is built."""
+class Agent(Protocol):
+    """Anything that can respond to a single agent turn.
 
-    def __init__(self, service_name: str = "SupportSmith") -> None:
-        self.service_name = service_name
+    The graph-driven :class:`app.agent.runner.SupportAgent` is the production
+    implementation; tests and eval drivers can satisfy this Protocol with a
+    scripted or stubbed object.
+    """
 
-    async def respond(self, request: AgentRequest) -> AgentResponse:
-        """Return a typed scaffold response for Phase 1."""
-        response = (
-            f"{self.service_name} Phase 1 harness is online. "
-            "The LangGraph support workflow will replace this scaffold in Phase 3."
-        )
-        return AgentResponse(
-            conversation_id=request.conversation_id,
-            response=response,
-            source="agent",
-            tools_used=["phase_one_agent"],
-            verified=True,
-            trace_id=f"trace_{uuid4().hex}",
-        )
+    async def respond(self, request: AgentRequest) -> AgentResponse: ...

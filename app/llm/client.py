@@ -1,8 +1,10 @@
 """Provider-neutral LLM and embedding client contracts."""
 
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
+
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 class ChatMessage(BaseModel):
@@ -10,7 +12,7 @@ class ChatMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    role: str
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
 
 
@@ -24,6 +26,23 @@ class TokenUsage(BaseModel):
     total_tokens: int = 0
 
 
+class ChatResponseSchema(BaseModel):
+    """Structured-output schema for a Chat Completions response.
+
+    OpenAI's Chat Completions accepts ``response_format={"type":"json_schema",
+    "json_schema":{"name":..., "schema":..., "strict":...}}``. The adapter
+    translates this Pydantic model into that wire shape; we keep the field name
+    as ``schema_definition`` here so it does not collide with Pydantic v1's
+    historical ``BaseModel.schema`` attribute.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    schema_definition: dict[str, Any]
+    strict: bool = True
+
+
 class ChatRequest(BaseModel):
     """Provider-neutral chat completion request."""
 
@@ -31,8 +50,10 @@ class ChatRequest(BaseModel):
 
     messages: list[ChatMessage]
     model: str | None = None
-    temperature: float = 0.0
-    response_schema: dict[str, Any] | None = None
+    temperature: float | None = None
+    response_schema: ChatResponseSchema | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    max_completion_tokens: int | None = None
 
 
 class ChatResponse(BaseModel):

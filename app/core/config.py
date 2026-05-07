@@ -30,8 +30,16 @@ class Settings(BaseSettings):
         repr=False,
         validation_alias=AliasChoices("SUPPORTSMITH_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
-    chat_model: str = "gpt-4o-mini"
+    chat_model: str = "gpt-5.5"
+    reasoning_model: str = "gpt-5.5"
+    routing_model: str = "gpt-5.5"
+    fallback_chat_models: tuple[str, ...] = ("gpt-5.4", "gpt-5.1", "gpt-5")
     embedding_model: str = "text-embedding-3-small"
+    max_tool_iterations: int = 6
+    planner_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "high"
+    routing_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "low"
+    planner_max_completion_tokens: int = 2048
+    synthesis_max_completion_tokens: int = 1024
 
 
 @lru_cache
