@@ -58,9 +58,8 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        create index support_documents_embedding_cosine_idx
-            on support_documents using ivfflat (embedding vector_cosine_ops)
-            with (lists = 100)
+        create index support_documents_embedding_hnsw_idx
+            on support_documents using hnsw (embedding vector_cosine_ops)
             where embedding is not null
         """
     )
@@ -177,7 +176,7 @@ def downgrade() -> None:
     op.drop_index("conversation_messages_conversation_idx", table_name="conversation_messages")
     op.drop_table("conversation_messages")
     op.drop_table("conversations")
-    op.execute("drop index if exists support_documents_embedding_cosine_idx")
+    op.execute("drop index if exists support_documents_embedding_hnsw_idx")
     op.drop_index("support_documents_metadata_gin_idx", table_name="support_documents")
     op.drop_index("support_documents_category_idx", table_name="support_documents")
     op.drop_index("support_documents_source_idx", table_name="support_documents")

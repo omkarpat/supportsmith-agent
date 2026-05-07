@@ -2,13 +2,16 @@
 
 A traceable multi-tool customer support agent with compliance guardrails, self-verification, and multi-turn memory.
 
-SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 ships the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early.
+SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 adds the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`.
 
 ## What To Review First
 
 - FastAPI app factory: `app.main:create_app`
 - Eval runner: `app.evals.runner`
 - Postgres migration: `alembic/versions/20260507_0001_init_pgvector.py`
+- Retrieval layer: `app.retrieval.{models,normalization,chunker,embeddings,repository,search}`
+- FAQ source loader: `app.retrieval.sources.take_home_faq`
+- Seed CLI: `scripts/db_seed.py` (entrypoint `supportsmith-seed`)
 
 ## Local Development
 
@@ -73,6 +76,14 @@ uv run mypy app tests alembic
 uv run supportsmith-eval
 ```
 
+The repository and search tests in `tests/test_retrieval_repository.py` are skipped unless a Postgres URL is provided. To exercise them locally:
+
+```bash
+docker compose up -d postgres
+SUPPORTSMITH_TEST_DATABASE_URL=postgresql://supportsmith:supportsmith@localhost:55432/supportsmith \
+    uv run pytest tests/test_retrieval_repository.py
+```
+
 ## Docker Development
 
 Use this path when you want Postgres, migrations, and the API all managed by Compose.
@@ -81,7 +92,7 @@ Use this path when you want Postgres, migrations, and the API all managed by Com
 docker compose up --build
 ```
 
-Compose includes a one-shot `migrate` service, so the local database is upgraded before the API starts.
+Compose includes one-shot `migrate` and `seed` services, so the local database is upgraded and populated with the take-home FAQ corpus before the API starts. Both services are idempotent: re-running `docker compose up` does not duplicate rows or re-embed unchanged content.
 
 Inside Docker Compose, the app uses the service hostname instead of `localhost`:
 
@@ -125,10 +136,25 @@ uv run uvicorn app.main:create_app --factory --reload
 
 The initial migration creates:
 
-- `support_documents` with `embedding vector(1536)` for FAQ and website/document chunks.
+- `support_documents` with `embedding vector(1536)` for FAQ and website/document chunks, indexed with HNSW cosine ops for fast similarity search at the scale this project actually runs at.
 - `conversations` and `conversation_messages`.
 - `trace_events` for agent observability.
 - `escalations` for handoff records.
+
+## Seeding The Knowledge Base
+
+Phase 2 seeds `support_documents` from a knowledge-base JSON file. The take-home FAQ corpus lives in `data/knowledge-base.json` (committed) with each row carrying a `quality` label of `trusted`, `low_quality`, or `ambiguous`. Only `trusted` rows are ingested; the other rows are surfaced in the run summary so reviewers can see what was filtered and why.
+
+`docker compose up` runs the seed automatically as a one-shot service after `migrate` and before `app`, so a fresh stack comes up with the FAQ corpus already in pgvector. To run the seed manually against a host-side Postgres:
+
+```bash
+uv run --env-file .env supportsmith-seed
+uv run --env-file .env supportsmith-seed --input path/to/your/knowledge-base.json
+```
+
+The CLI prints a JSON run summary with `inserted` / `updated` / `unchanged` / `embedded` counts, the per-row outcomes, and any rejected rows (rows whose `quality` is not `trusted`). Re-running the seed is idempotent: rows whose content hash is unchanged are not re-embedded or rewritten.
+
+Phase 2 ships only the deterministic fake-embedding path so seeding does not spend the take-home OpenAI key. Cosine retrieval is wired end-to-end against pgvector, but ranking quality across user-typed questions requires real embeddings — the OpenAI embedding adapter and a `--live-embeddings` flag are tracked for a later phase.
 
 ## Example Data Policy
 
