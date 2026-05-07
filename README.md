@@ -2,16 +2,19 @@
 
 A traceable multi-tool customer support agent with compliance guardrails, self-verification, and multi-turn memory.
 
-SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 adds the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`.
+SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wires the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools (FAQ search, category browse, clarify, general-knowledge fallback, escalate, refuse), a 6-iteration cap, and per-turn structured traces.
 
 ## What To Review First
 
 - FastAPI app factory: `app.main:create_app`
-- Eval runner: `app.evals.runner`
-- Postgres migration: `alembic/versions/20260507_0001_init_pgvector.py`
+- Agent graph: `app.agent.{state,nodes,graph,runner}` — read `graph.py` first for the edge map
+- Tool registry: `app.agent.tools` — six typed tools dispatched by JSON-schema-constrained plans
+- OpenAI adapter: `app.llm.openai` (Chat Completions only)
+- Startup probe + live wiring: `app.agent.wiring`
 - Retrieval layer: `app.retrieval.{models,normalization,chunker,embeddings,repository,search}`
 - FAQ source loader: `app.retrieval.sources.take_home_faq`
 - Seed CLI: `scripts/db_seed.py` (entrypoint `supportsmith-seed`)
+- Postgres migration: `alembic/versions/20260507_0001_init_pgvector.py`
 
 ## Local Development
 
@@ -141,6 +144,50 @@ The initial migration creates:
 - `trace_events` for agent observability.
 - `escalations` for handoff records.
 
+## Agent Graph
+
+`/chat` runs through a bounded LangGraph state machine:
+
+```text
+START -> load_context -> plan
+            plan ─ use_tool ─────────> execute_tool -> observe
+                                                       observe ─ continue ─> plan
+                                                       observe ─ ready ────> synthesize
+                                                       observe ─ cap-hit ──> halt -> synthesize
+            plan ─ clarify | escalate
+                 | refuse | synthesize_now ──────────> execute_tool -> observe -> synthesize
+synthesize -> verify -> finalize -> END
+```
+
+- **`plan`** runs the *reasoning* model (`SUPPORTSMITH_REASONING_MODEL`, default `gpt-5.5`) with `reasoning_effort=high` and a JSON-schema response format. The planner emits a typed `Plan{intent, tool_name, arguments, rationale}`; LangChain `bind_tools` is *not* used so the dispatch surface stays explicit.
+- **`execute_tool`** validates `arguments` against the matching Pydantic input model and dispatches to one of six tools: `search_faq`, `get_faq_by_category`, `ask_user_clarification`, `general_knowledge_lookup`, `escalate_to_human`, `refuse`.
+- **`observe`** is a deterministic post-tool router (no LLM call) that flips between `synthesize` and another `plan` round, capping at `SUPPORTSMITH_MAX_TOOL_ITERATIONS` (default 6).
+- **`synthesize`** runs the *chat* model (`SUPPORTSMITH_CHAT_MODEL`, default `gpt-5.5`) and returns structured JSON `{text, cited_titles}`. The user sees only `text`; cited titles flow through `matched_questions` as metadata, with a cross-check that drops any title the synthesizer hallucinated.
+- **`verify`** is a Phase 4 placeholder; **`finalize`** stamps the `trace_id` and exits.
+
+Every node appends a `TraceEvent` (node name, latency, model, token usage, short rationale) to graph state. Trace events are returned with the response under a stable `trace_id`; durable trace persistence lands in Phase 5.
+
+### OpenAI integration
+
+Phase 3 uses **Chat Completions and Embeddings** (`openai.AsyncOpenAI`, wrapped by `app.llm.openai.OpenAIChatCompletionsClient` and `OpenAIEmbeddingClient`). The Responses API is deferred — Chat Completions stays predictable under LangGraph orchestration. At startup the app probes the configured chat and reasoning models with a tiny ping, falling back through `SUPPORTSMITH_FALLBACK_CHAT_MODELS`. If no candidate works, startup fails with a typed `StartupConfigurationError` rather than coming up half-broken.
+
+### Test policy
+
+The default `uv run pytest` mocks OpenAI:
+
+- Adapter tests (`test_openai_adapter.py`) mock `openai.AsyncOpenAI.chat.completions.create` and `embeddings.create`.
+- Graph and node tests (`test_agent_graph.py`, `test_conversations.py`, `test_agent_wiring.py`) inject `ScriptedLLMClient` at the `LLMClient` Protocol seam.
+
+One opt-in end-to-end smoke test (`tests/test_agent_live.py`) hits the real OpenAI API against the seeded compose Postgres. It's marked `live` and excluded from the default run via `addopts = ["-m", "not live"]`. To run it manually:
+
+```bash
+docker compose up -d   # postgres healthy + auto-seed with live embeddings
+SUPPORTSMITH_TEST_DATABASE_URL=postgresql://supportsmith:supportsmith@localhost:55432/supportsmith \
+    uv run --env-file .env pytest -m live tests/test_agent_live.py
+```
+
+Broader live behavior tests (eval suites) land in `evals/` in a later phase.
+
 ## Seeding The Knowledge Base
 
 Phase 2 seeds `support_documents` from a knowledge-base JSON file. The take-home FAQ corpus lives in `data/knowledge-base.json` (committed) with each row carrying a `quality` label of `trusted`, `low_quality`, or `ambiguous`. Only `trusted` rows are ingested; the other rows are surfaced in the run summary so reviewers can see what was filtered and why.
@@ -148,13 +195,14 @@ Phase 2 seeds `support_documents` from a knowledge-base JSON file. The take-home
 `docker compose up` runs the seed automatically as a one-shot service after `migrate` and before `app`, so a fresh stack comes up with the FAQ corpus already in pgvector. To run the seed manually against a host-side Postgres:
 
 ```bash
-uv run --env-file .env supportsmith-seed
-uv run --env-file .env supportsmith-seed --input path/to/your/knowledge-base.json
+uv run --env-file .env supportsmith-seed                           # live OpenAI embeddings
+uv run --env-file .env supportsmith-seed --fake-embeddings         # deterministic, no API key
+uv run --env-file .env supportsmith-seed --input path/to/file.json
 ```
 
 The CLI prints a JSON run summary with `inserted` / `updated` / `unchanged` / `embedded` counts, the per-row outcomes, and any rejected rows (rows whose `quality` is not `trusted`). Re-running the seed is idempotent: rows whose content hash is unchanged are not re-embedded or rewritten.
 
-Phase 2 ships only the deterministic fake-embedding path so seeding does not spend the take-home OpenAI key. Cosine retrieval is wired end-to-end against pgvector, but ranking quality across user-typed questions requires real embeddings — the OpenAI embedding adapter and a `--live-embeddings` flag are tracked for a later phase.
+Default seeding uses live OpenAI embeddings (`text-embedding-3-small`, 1536 dims) so semantic ranking works end-to-end against the running agent. `--fake-embeddings` keeps deterministic vectors available for CI and offline use; if you choose fake on the seed side, configure the agent to use the matching fake embedder so retrieval stays consistent.
 
 ## Example Data Policy
 
@@ -172,4 +220,15 @@ For Railway, provision Postgres, set `DATABASE_URL`, deploy the Dockerfile, then
 
 ## Environment
 
-Copy `.env.example` to `.env` for local configuration. Phase 1 uses fake clients by default, so an OpenAI key is not required for tests or the deterministic eval runner.
+Copy `.env.example` to `.env` for local configuration. Tests and the deterministic eval runner mock OpenAI, so they don't need a key. The live agent (`docker compose up` or local uvicorn outside the test environment) requires `OPENAI_API_KEY` for chat completions and embeddings; the startup probe fails fast if it's missing.
+
+Notable settings:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `SUPPORTSMITH_CHAT_MODEL` | `gpt-5.5` | Synthesis + general-knowledge tool |
+| `SUPPORTSMITH_REASONING_MODEL` | `gpt-5.5` | Planner |
+| `SUPPORTSMITH_FALLBACK_CHAT_MODELS` | `gpt-5.4,gpt-5.1,gpt-5` | Walked when the primary model is unavailable at startup |
+| `SUPPORTSMITH_EMBEDDING_MODEL` | `text-embedding-3-small` | Retrieval embeddings (seed + agent must match) |
+| `SUPPORTSMITH_MAX_TOOL_ITERATIONS` | `6` | Hard cap on plan→execute→observe loops per turn |
+| `SUPPORTSMITH_PLANNER_REASONING_EFFORT` | `high` | Planner reasoning depth |

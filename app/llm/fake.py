@@ -1,6 +1,8 @@
 """Deterministic fake LLM clients for tests and local harnesses."""
 
 import hashlib
+from collections import deque
+from collections.abc import Iterable
 
 from app.llm.client import (
     ChatRequest,
@@ -32,6 +34,36 @@ class FakeLLMClient:
                 total_tokens=prompt_tokens + completion_tokens,
             ),
         )
+
+
+class ScriptedLLMClient:
+    """An LLMClient that pops queued :class:`ChatResponse` objects in order.
+
+    Tests script the exact sequence of LLM responses a graph turn should emit
+    (plan → maybe-observe → synthesize) so the graph runs end-to-end without
+    touching OpenAI. Each ``complete`` call also records the inbound request,
+    which lets tests assert that the right model and reasoning effort were
+    selected for the right node.
+    """
+
+    def __init__(self, responses: Iterable[ChatResponse]) -> None:
+        self._queue: deque[ChatResponse] = deque(responses)
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        """Return the next queued response or raise if the script is exhausted."""
+        self.requests.append(request)
+        if not self._queue:
+            raise RuntimeError(
+                "ScriptedLLMClient exhausted: graph asked for another response "
+                "but the test script provided none."
+            )
+        return self._queue.popleft()
+
+    @property
+    def remaining(self) -> int:
+        """Number of unused scripted responses; useful for completeness asserts."""
+        return len(self._queue)
 
 
 class FakeEmbeddingClient:

@@ -1,15 +1,21 @@
-"""Deterministic Phase 1 eval runner."""
+"""Deterministic eval runner.
+
+The runner loads YAML cases, dispatches them through any object satisfying
+the :class:`Agent` Protocol, and prints a structured pass/fail summary. The
+Phase 6 work will replace ``cases.yaml`` with a richer behavior suite; for
+now, this runner only provides plumbing and is invoked from tests.
+
+The CLI entrypoint refuses to run without a wired-up agent factory so a
+misconfiguration fails loudly. Phase 6 will land that wiring.
+"""
 
 import argparse
-import asyncio
-import json
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.harness import AgentRequest, AgentResponse, PhaseOneAgent
+from app.agent.harness import Agent, AgentRequest, AgentResponse
 
 
 class EvalExpectations(BaseModel):
@@ -65,7 +71,7 @@ def load_cases(path: Path) -> list[EvalCase]:
     return [EvalCase.model_validate(case) for case in cases]
 
 
-async def run_cases(agent: PhaseOneAgent, cases: list[EvalCase]) -> EvalSummary:
+async def run_cases(agent: Agent, cases: list[EvalCase]) -> EvalSummary:
     """Run eval cases against a support agent."""
     results = []
     for case in cases:
@@ -107,10 +113,10 @@ def score_response(response: AgentResponse, expectations: EvalExpectations) -> l
     return failures
 
 
-async def run_file(path: Path) -> EvalSummary:
-    """Run eval cases from a YAML file using the Phase 1 fake agent."""
+async def run_file(path: Path, agent: Agent) -> EvalSummary:
+    """Run eval cases from a YAML file against the supplied agent."""
     cases = load_cases(path)
-    return await run_cases(PhaseOneAgent(), cases)
+    return await run_cases(agent, cases)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,13 +132,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """CLI entrypoint for deterministic evals."""
-    args = build_parser().parse_args()
-    summary = asyncio.run(run_file(Path(args.path)))
-    payload: dict[str, Any] = summary.model_dump(mode="json")
-    print(json.dumps(payload, indent=2))
-    if summary.failed:
-        raise SystemExit(1)
+    """CLI entrypoint.
+
+    Phase 3 leaves the live agent factory unwired here on purpose: live evals
+    against the OpenAI key are out of scope for the test suite and will get a
+    proper runner in Phase 6. Tests call :func:`run_cases` / :func:`run_file`
+    directly with a scripted agent.
+    """
+    build_parser().parse_args()
+    raise SystemExit(
+        "supportsmith-eval is not wired in Phase 3. Phase 6 will land a real "
+        "live-agent runner; until then, drive run_cases() from a test or "
+        "scripted harness."
+    )
 
 
 if __name__ == "__main__":

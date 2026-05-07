@@ -17,6 +17,8 @@ services:
 
   app:
     build: .
+    env_file:
+      - .env
     environment:
       SUPPORTSMITH_ENVIRONMENT: local
       DATABASE_URL: postgresql://supportsmith:supportsmith@postgres:5432/supportsmith
@@ -43,6 +45,8 @@ services:
   seed:
     build: .
     command: ["uv", "run", "supportsmith-seed"]
+    env_file:
+      - .env
     environment:
       SUPPORTSMITH_ENVIRONMENT: local
       DATABASE_URL: postgresql://supportsmith:supportsmith@postgres:5432/supportsmith
