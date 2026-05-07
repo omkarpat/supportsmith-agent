@@ -53,8 +53,13 @@ class FakeEmbeddingClient:
         )
 
     def _vector_for_text(self, text: str) -> list[float]:
-        digest = hashlib.sha256(text.encode("utf-8")).digest()
-        values = [digest[index] / 255.0 for index in range(self.dimensions)]
+        material = bytearray()
+        counter = 0
+        while len(material) < self.dimensions:
+            block = hashlib.sha256(f"{text}|{counter}".encode()).digest()
+            material.extend(block)
+            counter += 1
+        values = [material[index] / 255.0 for index in range(self.dimensions)]
         magnitude = sum(value * value for value in values) ** 0.5
         if magnitude == 0:
             return values

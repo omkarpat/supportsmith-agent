@@ -1,0 +1,202 @@
+{
+    "knowledge_base_items": [
+        {
+            "question": "How do I change my profile information?",
+            "answer": "Navigate to your profile page, click on 'Edit Profile', and make the desired changes.",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "What steps do I take to reset my password?",
+            "answer": "Go to account settings, select 'Change Password', enter your current password and then the new one. Confirm the new password and save the changes.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "How can I restore my account to its default settings?",
+            "answer": "In the account settings, there should be an option labeled 'Restore Default'. Clicking this will revert all custom settings back to their original state.",
+            "category": "settings",
+            "quality": "trusted"
+        },
+        {
+            "question": "Is it possible to change my registered email address?",
+            "answer": "Yes, navigate to account settings, find the 'Change Email' option, enter your new email, and follow the verification process.",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "How can I retrieve lost data from my account?",
+            "answer": "Contact our support team with details: Date of loss, Type of data, Account info. They'll guide you through the recovery process.",
+            "category": "data_recovery",
+            "quality": "trusted"
+        },
+        {
+            "question": "Are there any guidelines on setting a strong password?",
+            "answer": "Use a combination of uppercase and lowercase letters, numbers, and special characters. Avoid using easily guessable information like birthdays or names.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "Can I set up two-factor authentication for my account?",
+            "answer": "Yes, in the security section of account settings, there's an option for two-factor authentication. Follow the setup instructions provided there.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "How do I deactivate my account?",
+            "answer": "Under account settings, there's a 'Deactivate Account' option. Remember, this action is irreversible.",
+            "category": "account_lifecycle",
+            "quality": "trusted"
+        },
+        {
+            "question": "What do I do if my account has been compromised?",
+            "answer": "Immediately reset your password and contact our security team.",
+            "category": "security_incident",
+            "quality": "trusted"
+        },
+        {
+            "question": "Can I customize the notifications I receive?",
+            "answer": "Yes, head to the notifications settings in your account and choose which ones you'd like to receive.",
+            "category": "notifications",
+            "quality": "trusted"
+        },
+        {
+            "question": "Where can I update my display name?",
+            "answer": "Go to Profile -> Edit Profile -> Display Name, then save.",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "Edit avatar?",
+            "answer": "Open Profile, tap your avatar, and upload a new image (PNG/JPG, max 5 MB).",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "Enable 2FA with an authenticator app",
+            "answer": "Settings -> Security -> Two-Factor -> Authenticator App -> scan the QR and enter the 6-digit code.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "Do you support passkeys?",
+            "answer": "Yes. Go to Settings -> Security -> Passkeys and register a device key supported by your browser/OS.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "I didn't get the password reset email",
+            "answer": "Check spam, confirm the inbox matches your account, and request again. If still missing after 10 minutes, contact support.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "Change login email",
+            "answer": "Settings -> Account -> Change Email. Verify via the link sent to your new address.",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "Verify my email address",
+            "answer": "Open the verification email and click the link. If expired, request a new one from Settings -> Account.",
+            "category": "profile",
+            "quality": "trusted"
+        },
+        {
+            "question": "How do I add a payment method?",
+            "answer": "Billing -> Payment Methods -> Add Card/PayPal and complete verification.",
+            "category": "billing",
+            "quality": "trusted"
+        },
+        {
+            "question": "Where can I download invoices?",
+            "answer": "Billing -> Invoices. Click an invoice to download as PDF.",
+            "category": "billing",
+            "quality": "trusted"
+        },
+        {
+            "question": "Can I get a refund?",
+            "answer": "Refunds are available within 14 days of purchase for eligible plans. Contact support with your order ID.",
+            "category": "billing",
+            "quality": "trusted"
+        },
+        {
+            "question": "Upgrade my plan",
+            "answer": "Settings -> Subscription -> Change Plan. Prorations apply immediately.",
+            "category": "subscription",
+            "quality": "trusted"
+        },
+        {
+            "question": "Cancel subscription",
+            "answer": "Settings -> Subscription -> Cancel. Access continues until the current billing period ends.",
+            "category": "subscription",
+            "quality": "trusted"
+        },
+        {
+            "question": "Pause email notifications",
+            "answer": "Notifications -> Email -> toggle off or set Do Not Disturb hours.",
+            "category": "notifications",
+            "quality": "trusted"
+        },
+        {
+            "question": "Mobile push alerts are too noisy",
+            "answer": "Notifications -> Mobile -> choose only critical categories or reduce frequency.",
+            "category": "notifications",
+            "quality": "trusted"
+        },
+        {
+            "question": "How do I export my data?",
+            "answer": "Settings -> Privacy -> Export Data to request a ZIP with JSON/CSV files.",
+            "category": "privacy",
+            "quality": "trusted"
+        },
+        {
+            "question": "Delete my account and data",
+            "answer": "Settings -> Privacy -> Delete Account. This is permanent after a 7-day grace period.",
+            "category": "privacy",
+            "quality": "trusted"
+        },
+        {
+            "question": "App keeps crashing on launch",
+            "answer": "Update to the latest version, clear cache, and reboot the device. If it persists, send logs via Help -> Report a Bug.",
+            "category": "troubleshooting",
+            "quality": "trusted"
+        },
+        {
+            "question": "Why is the site slow today?",
+            "answer": "Check status page for incidents. Try a different network and disable extensions that might block requests.",
+            "category": "troubleshooting",
+            "quality": "trusted"
+        },
+        {
+            "question": "Recognize a phishing email from us",
+            "answer": "We never ask for your password or 2FA codes. Verify sender domain and links before clicking.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "My session was terminated unexpectedly",
+            "answer": "This can occur after a password change or sign-in from a new device. Re-login and review active sessions in Settings -> Security.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "Where can I find the API key?",
+            "answer": "Settings -> Developer -> API Keys. Create and copy a secret key; store it securely.",
+            "category": "developer",
+            "quality": "trusted"
+        },
+        {
+            "question": "help!!! my account is locked",
+            "answer": "pls help me unlock it ASAP!!!",
+            "category": "security",
+            "quality": "low_quality"
+        },
+        {
+            "question": "x",
+            "answer": "Please provide more details about your issue.",
+            "category": "troubleshooting",
+            "quality": "ambiguous"
+        }
+    ]
+}

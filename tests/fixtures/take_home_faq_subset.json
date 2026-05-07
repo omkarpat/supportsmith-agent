@@ -1,0 +1,28 @@
+{
+    "knowledge_base_items": [
+        {
+            "question": "What steps do I take to reset my password?",
+            "answer": "Go to account settings, select 'Change Password', enter your current password and then the new one. Confirm the new password and save the changes.",
+            "category": "security",
+            "quality": "trusted"
+        },
+        {
+            "question": "How do I export my data?",
+            "answer": "Settings -> Privacy -> Export Data to request a ZIP with JSON/CSV files.",
+            "category": "privacy",
+            "quality": "trusted"
+        },
+        {
+            "question": "help!!! my account is locked",
+            "answer": "pls help me unlock it ASAP!!!",
+            "category": "security",
+            "quality": "low_quality"
+        },
+        {
+            "question": "x",
+            "answer": "Please provide more details about your issue.",
+            "category": "troubleshooting",
+            "quality": "ambiguous"
+        }
+    ]
+}
