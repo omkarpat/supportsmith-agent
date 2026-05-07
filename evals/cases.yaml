@@ -1,0 +1,11 @@
+cases:
+  - id: phase-one-healthcheck
+    conversation_id: eval-phase-1
+    message: "Is the harness online?"
+    expectations:
+      response_contains: "Phase 1 harness is online"
+      source: "agent"
+      tools_used:
+        - "phase_one_agent"
+      verified: true
+
