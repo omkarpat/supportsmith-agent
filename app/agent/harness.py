@@ -7,12 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field
 AgentSource = Literal[
     "agent",
     "faq",
-    "compliance",
     "general",
-    "human",
     "clarify",
     "escalate",
     "refuse",
+    "compliance",
 ]
 
 

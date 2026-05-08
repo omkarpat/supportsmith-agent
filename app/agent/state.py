@@ -3,10 +3,6 @@
 The state object travels through every node. Nodes append to ``trace_events``
 but never mutate prior entries, so the trace is always a faithful chronological
 record of what the graph did during the turn.
-
-Compliance and verification fields are placeholders: Phase 4 owns precheck,
-postcheck, and override behavior. Phase 3 only needs them to exist so the
-state shape doesn't churn when Phase 4 lands.
 """
 
 from __future__ import annotations
@@ -16,7 +12,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.compliance import ComplianceDecision
 from app.agent.tools import ToolName
+from app.agent.verifier import VerifierOutput
 
 PlanIntent = Literal[
     "use_tool",
@@ -28,11 +26,13 @@ PlanIntent = Literal[
 
 NodeName = Literal[
     "load_context",
+    "precheck",
     "plan",
     "execute_tool",
     "observe",
     "synthesize",
     "verify",
+    "postcheck",
     "finalize",
 ]
 
@@ -98,31 +98,26 @@ class TraceEvent(BaseModel):
 
 
 class CandidateAnswer(BaseModel):
-    """Tentative final answer produced by the synthesize node."""
+    """Tentative final answer produced by the synthesize node.
+
+    ``compliance`` is a distinct source from ``refuse``: planner-driven refuses
+    use ``refuse`` (cheap in-loop gatekeeper); compliance precheck/postcheck
+    refusals use ``compliance`` so reviewers can distinguish the two paths.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     text: str
     citations: list[str] = Field(default_factory=list)
-    source: Literal["faq", "general", "clarify", "escalate", "refuse", "agent"] = "agent"
-
-
-class VerificationResult(BaseModel):
-    """Phase 4 placeholder; Phase 3 always reports ``passed`` after synthesis."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    passed: bool = True
-    issues: list[str] = Field(default_factory=list)
-
-
-class ComplianceDecision(BaseModel):
-    """Phase 4 placeholder for precheck/postcheck verdicts."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    allowed: bool = True
-    reason: str | None = None
+    source: Literal[
+        "faq",
+        "general",
+        "clarify",
+        "escalate",
+        "refuse",
+        "compliance",
+        "agent",
+    ] = "agent"
 
 
 class GraphState(BaseModel):
@@ -142,7 +137,9 @@ class GraphState(BaseModel):
     observations: list[ToolObservation] = Field(default_factory=list)
     tool_iterations: int = 0
     candidate_answer: CandidateAnswer | None = None
-    verification: VerificationResult = Field(default_factory=VerificationResult)
-    compliance: ComplianceDecision = Field(default_factory=ComplianceDecision)
+    compliance_precheck: ComplianceDecision | None = None
+    compliance_postcheck: ComplianceDecision | None = None
+    verification: VerifierOutput | None = None
+    repair_attempts: int = 0
     trace_events: list[TraceEvent] = Field(default_factory=list)
     halted_reason: str | None = None

@@ -17,6 +17,7 @@ COPY scripts ./scripts
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY data ./data
+COPY prompts ./prompts
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8000

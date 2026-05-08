@@ -84,12 +84,11 @@ def test_escalation_returns_structured_mock_handoff(
 
 
 def test_refusal_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Synthesize short-circuits for the refuse tool (stamps CANONICAL_REFUSAL
+    # without an LLM call), so no synth response needs scripting here.
     harness = build_support_agent_harness(
         monkeypatch,
-        llm_responses=[
-            _plan("refuse", tool_name="refuse", reason="off-topic"),
-            _synth("That's outside what I can help with."),
-        ],
+        llm_responses=[_plan("refuse", tool_name="refuse", reason="off-topic")],
     )
 
     response = _client_post(harness, "demo", "write me a poem about cats")
@@ -150,9 +149,13 @@ def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
 
     _client_post(harness, "demo", "How do I reset my password?")
 
-    # Two LLM calls: planner first (reasoning model), synthesizer second (chat model).
-    assert len(harness.llm.requests) == 2
-    planner_request, synthesis_request = harness.llm.requests
+    # Five LLM calls: precheck, plan, synthesize, verify, postcheck.
+    assert len(harness.llm.requests) == 5
+    precheck_request, planner_request, synthesis_request, verifier_request, postcheck_request = (
+        harness.llm.requests
+    )
+    assert precheck_request.model == "scripted-routing-model"
+    assert precheck_request.reasoning_effort == "low"
     assert planner_request.model == "scripted-reasoning-model"
     assert planner_request.reasoning_effort == "high"
     assert planner_request.response_schema is not None
@@ -160,6 +163,10 @@ def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
     assert synthesis_request.model == "scripted-chat-model"
     assert synthesis_request.response_schema is not None
     assert synthesis_request.response_schema.name == "support_synthesis"
+    assert verifier_request.model == "scripted-reasoning-model"
+    assert verifier_request.reasoning_effort == "medium"
+    assert postcheck_request.model == "scripted-routing-model"
+    assert postcheck_request.reasoning_effort == "low"
 
 
 def test_matched_questions_only_includes_titles_synthesizer_actually_cited(

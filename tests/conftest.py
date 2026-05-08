@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -6,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agent.compliance import ComplianceAgent, ComplianceConfig
 from app.agent.graph import build_graph
 from app.agent.nodes import NodeContext
 from app.agent.runner import SupportAgent
@@ -93,18 +95,69 @@ def _scripted_responses(payloads: Iterable[str]) -> list[ChatResponse]:
     ]
 
 
+def compliance_decision_json(
+    *,
+    allowed: bool = True,
+    category: str = "support_allowed",
+    reason: str = "scripted",
+    override_response: str | None = None,
+    confidence: float = 0.95,
+) -> str:
+    """Render a ComplianceDecision JSON payload for scripted tests."""
+    return json.dumps(
+        {
+            "allowed": allowed,
+            "category": category,
+            "reason": reason,
+            "override_response": override_response,
+            "confidence": confidence,
+        }
+    )
+
+
+def verifier_verdict_json(
+    *,
+    addresses_request: bool = True,
+    grounding: str = "faq_grounded",
+    leakage_detected: bool = False,
+    safe_source_label: bool = True,
+    retry_recommendation: str = "accept",
+    reason: str = "scripted",
+    confidence: float = 0.95,
+) -> str:
+    """Render a VerifierOutput JSON payload for scripted tests."""
+    return json.dumps(
+        {
+            "addresses_request": addresses_request,
+            "grounding": grounding,
+            "leakage_detected": leakage_detected,
+            "safe_source_label": safe_source_label,
+            "retry_recommendation": retry_recommendation,
+            "reason": reason,
+            "confidence": confidence,
+        }
+    )
+
+
 def build_support_agent_harness(
     monkeypatch: pytest.MonkeyPatch,
     *,
     llm_responses: Iterable[str],
     canned_search_results: Iterable[RetrievalResult] | None = None,
+    wrap_gates: bool = True,
 ) -> SupportAgentHarness:
     """Build a TestClient whose ``/chat`` flows through the SupportAgent graph.
 
-    ``llm_responses`` is the ordered sequence of LLM completions a turn will
-    consume (typically: planner JSON, then synthesizer prose). The test-mode
-    lifespan does not install an agent, so we set ``app.state.agent`` after
-    the TestClient enters lifespan but before any request flies.
+    By default, ``wrap_gates=True`` automatically prepends a "support_allowed"
+    precheck and appends an "accept" verifier verdict + "support_allowed"
+    postcheck. Tests that focus on the planner / synthesizer flow can keep
+    ``llm_responses`` short and not worry about the gates. Compliance- and
+    verifier-specific tests pass ``wrap_gates=False`` and script every
+    response explicitly.
+
+    The test-mode lifespan does not install an agent, so we set
+    ``app.state.agent`` after the TestClient enters lifespan but before any
+    request flies.
     """
     monkeypatch.setattr(
         PostgresDatabase,
@@ -112,7 +165,18 @@ def build_support_agent_harness(
         classmethod(lambda cls, settings: FakeDatabase()),
     )
 
-    llm = ScriptedLLMClient(_scripted_responses(llm_responses))
+    inner = list(llm_responses)
+    if wrap_gates:
+        scripted = [
+            compliance_decision_json(),
+            *inner,
+            verifier_verdict_json(),
+            compliance_decision_json(),
+        ]
+    else:
+        scripted = inner
+
+    llm = ScriptedLLMClient(_scripted_responses(scripted))
     search = FakeSupportSearch(canned=list(canned_search_results or []))
     deps = ToolDependencies(
         llm=llm,
@@ -120,15 +184,24 @@ def build_support_agent_harness(
         search=search,  # type: ignore[arg-type]
         chat_model="scripted-chat-model",
     )
+    compliance = ComplianceAgent(
+        llm=llm,
+        config=ComplianceConfig(model="scripted-routing-model", reasoning_effort="low"),
+    )
     ctx = NodeContext(
         llm=llm,
         tools=ToolRegistry(deps),
+        compliance=compliance,
         chat_model="scripted-chat-model",
         reasoning_model="scripted-reasoning-model",
         planner_reasoning_effort="high",
         planner_max_completion_tokens=512,
         synthesis_max_completion_tokens=256,
+        verifier_model="scripted-reasoning-model",
+        verifier_reasoning_effort="medium",
+        verifier_max_completion_tokens=512,
         max_tool_iterations=6,
+        max_repair_attempts=1,
     )
     agent = SupportAgent(build_graph(ctx))
 
@@ -162,7 +235,9 @@ __all__ = [
     "FakeSupportSearch",
     "SupportAgentHarness",
     "build_support_agent_harness",
+    "compliance_decision_json",
     "faq_result",
+    "verifier_verdict_json",
 ]
 
 

@@ -56,10 +56,24 @@ def _to_agent_response(state: GraphState, *, conversation_id: str) -> AgentRespo
         source=source,
         matched_questions=list(candidate.citations) if candidate else [],
         tools_used=tools_used,
-        verified=state.verification.passed,
+        verified=_project_verified(state),
         trace_id=state.turn_id,
         cost=cost,
     )
+
+
+def _project_verified(state: GraphState) -> bool:
+    """Did the candidate clear every gate that ran this turn?
+
+    True when each gate that executed approved the answer:
+    - precheck (always runs unless missing) said allowed
+    - verify (skipped on precheck hard-block) said retry_recommendation == accept
+    - postcheck (skipped on precheck hard-block) said allowed
+    """
+    precheck_ok = state.compliance_precheck is None or state.compliance_precheck.allowed
+    verify_ok = state.verification is None or state.verification.retry_recommendation == "accept"
+    postcheck_ok = state.compliance_postcheck is None or state.compliance_postcheck.allowed
+    return precheck_ok and verify_ok and postcheck_ok
 
 
 def _project_source(candidate: CandidateAnswer | None) -> AgentSource:
@@ -75,5 +89,6 @@ def _project_source(candidate: CandidateAnswer | None) -> AgentSource:
         "clarify": "clarify",
         "escalate": "escalate",
         "refuse": "refuse",
+        "compliance": "compliance",
     }
     return mapping.get(candidate.source, _SOURCE_FALLBACK)
