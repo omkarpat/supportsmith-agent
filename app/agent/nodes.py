@@ -18,16 +18,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.agent.compliance import ComplianceAgent, is_hard_block
+from app.agent.policy import CANONICAL_REFUSAL
 from app.agent.state import (
     CandidateAnswer,
-    ComplianceDecision,
     GraphState,
     NodeName,
     Plan,
     ToolObservation,
     TraceEvent,
     TraceTokenUsage,
-    VerificationResult,
 )
 from app.agent.tools import (
     TOOL_NAMES,
@@ -39,6 +39,7 @@ from app.agent.tools import (
     SearchFAQOutput,
     ToolRegistry,
 )
+from app.agent.verifier import VerifierOutput
 from app.llm.client import (
     ChatMessage,
     ChatRequest,
@@ -47,6 +48,7 @@ from app.llm.client import (
     ReasoningEffort,
 )
 from app.llm.openai import LLMProviderError
+from app.prompts import load_prompt
 
 
 @dataclass(frozen=True)
@@ -55,12 +57,17 @@ class NodeContext:
 
     llm: LLMClient
     tools: ToolRegistry
+    compliance: ComplianceAgent
     chat_model: str
     reasoning_model: str
     planner_reasoning_effort: ReasoningEffort
     planner_max_completion_tokens: int
     synthesis_max_completion_tokens: int
+    verifier_model: str
+    verifier_reasoning_effort: ReasoningEffort | None
+    verifier_max_completion_tokens: int
     max_tool_iterations: int
+    max_repair_attempts: int = 1
 
 
 # --- planner schema (passed to OpenAI as response_format=json_schema) ---------
@@ -89,51 +96,9 @@ _PLANNER_SCHEMA: dict[str, Any] = {
     "required": ["intent", "tool_name", "arguments", "rationale"],
 }
 
-_PLANNER_SYSTEM_PROMPT = """\
-You are SupportSmith's planner. Decide the next action for one turn.
-
-Choose exactly one intent:
-- "use_tool": invoke a tool from the allowed list. Set tool_name and arguments.
-- "clarify": ask the user a short clarification question via the
-  ask_user_clarification tool. Set tool_name="ask_user_clarification" and put
-  the user-facing question into arguments.question.
-- "synthesize_now": observations are sufficient for a final answer.
-- "escalate": route to a human; set tool_name="escalate_to_human" and provide
-  arguments.reason. The runtime will attach the transcript.
-- "refuse": the request is out of scope or unsafe; set tool_name="refuse" and
-  provide arguments.reason.
-
-Allowed tools: search_faq, get_faq_by_category, ask_user_clarification,
-general_knowledge_lookup, escalate_to_human, refuse.
-
-Routing guidance:
-- Prefer search_faq for any specific support question.
-- Use general_knowledge_lookup only after FAQ retrieval has run and returned
-  no high-confidence match.
-- For ambiguous, malformed, or single-character user messages: clarify.
-- For account compromise, lockout, or sensitive security incidents you cannot
-  resolve via FAQ: escalate.
-
-Keep rationale to one short sentence. Do not include chain-of-thought.
-Return JSON matching the schema; no extra fields.
-"""
-
-
-_SYNTHESIS_SYSTEM_PROMPT = """\
-You are SupportSmith's writer. Compose a concise, accurate support reply
-grounded in the supplied tool observations. Do not invent product behavior.
-
-Output rules:
-- Return JSON matching the schema: {"text": "<user-facing reply>",
-  "cited_titles": ["<exact FAQ title>", ...]}.
-- Put the entire user-facing answer in "text". Do not include source labels,
-  inline "Source: ..." lines, or any reference to FAQ titles inside "text".
-- Put the FAQ titles you actually used into "cited_titles", word-for-word as
-  they appear in the observations. If you did not use a search result, omit
-  its title.
-- If the observations are insufficient, say so plainly in "text" and return
-  "cited_titles": [].
-"""
+# System prompts for the planner and synthesizer live in YAML under prompts/.
+# Loaded lazily so a typo in a prompt file fails near where it's used, not at
+# module import time.
 
 _SYNTHESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -156,6 +121,43 @@ class _SynthesisOutput(BaseModel):
 
     text: str
     cited_titles: list[str] = []
+
+
+_VERIFIER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "addresses_request": {"type": "boolean"},
+        "grounding": {
+            "type": "string",
+            "enum": [
+                "faq_grounded",
+                "general_marked",
+                "clarification",
+                "escalation",
+                "refusal",
+                "unsupported",
+            ],
+        },
+        "leakage_detected": {"type": "boolean"},
+        "safe_source_label": {"type": "boolean"},
+        "retry_recommendation": {
+            "type": "string",
+            "enum": ["accept", "repair", "escalate", "refuse"],
+        },
+        "reason": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": [
+        "addresses_request",
+        "grounding",
+        "leakage_detected",
+        "safe_source_label",
+        "retry_recommendation",
+        "reason",
+        "confidence",
+    ],
+}
 
 
 # --- helpers ------------------------------------------------------------------
@@ -234,7 +236,7 @@ async def plan(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
             strict=False,
         ),
         messages=[
-            ChatMessage(role="system", content=_PLANNER_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=load_prompt("planner").system),
             ChatMessage(role="user", content=_render_plan_prompt(state)),
         ],
     )
@@ -342,8 +344,33 @@ async def observe(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
 
 
 async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
-    """Compose the final answer using the chat model and observation context."""
+    """Compose the final answer using the chat model and observation context.
+
+    Short-circuit: when the planner picked the ``refuse`` tool, skip the LLM
+    call and stamp :data:`CANONICAL_REFUSAL` directly. The doc requires one
+    refusal string for all refusals, and the ``refuse`` tool's output is
+    just ``{reason: ...}`` — there is nothing for the synthesizer to compose.
+    """
     started = _now()
+
+    last = state.observations[-1] if state.observations else None
+    if last is not None and last.succeeded and last.tool_name == "refuse":
+        candidate = CandidateAnswer(
+            text=CANONICAL_REFUSAL,
+            citations=[],
+            source="refuse",
+        )
+        event = _make_event(
+            node="synthesize",
+            started_at=started,
+            rationale="planner refused; stamped canonical refusal without an LLM call",
+            payload={"source": "refuse", "skipped_llm": True},
+        )
+        return {
+            "candidate_answer": candidate,
+            "trace_events": [*state.trace_events, event],
+        }
+
     rendered_observations = _render_observations(state)
 
     response = await ctx.llm.complete(
@@ -356,7 +383,7 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
                 strict=False,
             ),
             messages=[
-                ChatMessage(role="system", content=_SYNTHESIS_SYSTEM_PROMPT),
+                ChatMessage(role="system", content=load_prompt("synthesizer").system),
                 ChatMessage(
                     role="user",
                     content=(
@@ -400,19 +427,214 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     }
 
 
-async def verify(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
-    """Phase 4 placeholder: pass-through verification."""
+async def precheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
+    """Run the compliance precheck on the user message before planning.
+
+    Hard-blocks (prompt injection, harmful/illegal, severe sensitive-account)
+    short-circuit to ``finalize`` via the conditional edge. Other categories
+    pass through with the decision attached to state so the planner can route
+    sensibly.
+    """
     started = _now()
+    decision = await ctx.compliance.precheck(state.user_message)
+
+    update: dict[str, Any] = {"compliance_precheck": decision}
+    rationale = f"category={decision.category} allowed={decision.allowed}"
+
+    if is_hard_block(decision):
+        update["candidate_answer"] = CandidateAnswer(
+            text=CANONICAL_REFUSAL,
+            citations=[],
+            source="compliance",
+        )
+        update["halted_reason"] = f"compliance precheck blocked: {decision.category}"
+        rationale = f"hard-block on {decision.category}; routing to finalize"
+
+    event = _make_event(
+        node="precheck",
+        started_at=started,
+        model=ctx.compliance.config.model,
+        rationale=rationale,
+        payload={
+            "mode": "precheck",
+            "category": decision.category,
+            "allowed": decision.allowed,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "override_applied": False,
+        },
+    )
+    update["trace_events"] = [*state.trace_events, event]
+    return update
+
+
+async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
+    """Run the verifier on the candidate answer and decide accept/repair/reject.
+
+    Per the Phase 4 fail-fast policy:
+    - ``accept`` → forward to postcheck.
+    - ``repair`` → bounce back to synthesize **at most once** for fixable
+      wording/source-label issues. If we've already repaired, treat as
+      ``escalate`` to avoid loops.
+    - ``escalate`` → stamp the answer as an escalation message and forward.
+    - ``refuse`` → replace the answer with the canonical refusal and forward.
+    """
+    started = _now()
+    if state.candidate_answer is None:
+        raise RuntimeError("verify called without a candidate_answer in state")
+
+    rendered_observations = _render_observations(state)
+    verifier_user_content = (
+        f'User message: "{state.user_message}"\n\n'
+        f"Candidate answer source label: {state.candidate_answer.source}\n\n"
+        f"Candidate answer text:\n{state.candidate_answer.text}\n\n"
+        f"Tool observations:\n{rendered_observations}"
+    )
+    response = await ctx.llm.complete(
+        ChatRequest(
+            model=ctx.verifier_model,
+            reasoning_effort=ctx.verifier_reasoning_effort,
+            max_completion_tokens=ctx.verifier_max_completion_tokens,
+            response_schema=ChatResponseSchema(
+                name="verifier_verdict",
+                schema_definition=_VERIFIER_SCHEMA,
+                strict=False,
+            ),
+            messages=[
+                ChatMessage(role="system", content=load_prompt("verifier").system),
+                ChatMessage(role="user", content=verifier_user_content),
+            ],
+        )
+    )
+    verdict = _parse_verifier(response.content)
+    rationale = (
+        f"grounding={verdict.grounding} retry={verdict.retry_recommendation} "
+        f"leakage={verdict.leakage_detected}"
+    )
+    payload: dict[str, Any] = {
+        "addresses_request": verdict.addresses_request,
+        "grounding": verdict.grounding,
+        "leakage_detected": verdict.leakage_detected,
+        "safe_source_label": verdict.safe_source_label,
+        "retry_recommendation": verdict.retry_recommendation,
+        "confidence": verdict.confidence,
+        "reason": verdict.reason,
+    }
+
+    effective = verdict.retry_recommendation
+    if effective == "repair" and state.repair_attempts >= ctx.max_repair_attempts:
+        effective = "escalate"
+        rationale += "; repair budget exhausted, escalating"
+        payload["effective_recommendation"] = "escalate"
+
+    # Store the *effective* verdict so the router doesn't loop us back to
+    # synthesize after a budget-exhausted repair was already converted to
+    # escalate above. The raw verifier verdict is preserved in the trace
+    # payload (retry_recommendation field) for auditability.
+    update: dict[str, Any] = {
+        "verification": verdict.model_copy(update={"retry_recommendation": effective})
+    }
+
+    if effective == "repair":
+        update["repair_attempts"] = state.repair_attempts + 1
+    elif effective == "refuse":
+        update["candidate_answer"] = state.candidate_answer.model_copy(
+            update={"text": CANONICAL_REFUSAL, "source": "refuse", "citations": []}
+        )
+    elif effective == "escalate":
+        update["candidate_answer"] = state.candidate_answer.model_copy(
+            update={
+                "text": (
+                    "I'm not confident enough to answer this on my own. "
+                    "I'll route you to a human agent who can help."
+                ),
+                "source": "escalate",
+            }
+        )
+
     event = _make_event(
         node="verify",
         started_at=started,
-        rationale="phase 4 placeholder; pass-through",
+        model=response.model,
+        tokens=TraceTokenUsage(**response.usage.model_dump()),
+        rationale=rationale,
+        payload=payload,
     )
-    return {
-        "verification": VerificationResult(passed=True),
-        "compliance": ComplianceDecision(allowed=True),
-        "trace_events": [*state.trace_events, event],
-    }
+    update["trace_events"] = [*state.trace_events, event]
+    return update
+
+
+async def postcheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
+    """Run the compliance postcheck on the verified candidate answer.
+
+    When the postcheck blocks, replace the candidate text with the agent's
+    ``override_response`` (if provided) or :data:`CANONICAL_REFUSAL` and stamp
+    the source as ``compliance``.
+
+    Terminal candidates (refuse / escalate / clarify) skip the LLM call: the
+    answer is already a known-safe template (canonical refusal, escalation
+    handoff, or a clarification question with topic examples), so paying for
+    another compliance pass would only risk the LLM relabelling a refusal as
+    a "compliance"-source override and burning tokens for no behavior change.
+    """
+    started = _now()
+    if state.candidate_answer is None:
+        raise RuntimeError("postcheck called without a candidate_answer in state")
+
+    if state.candidate_answer.source in {"refuse", "escalate", "clarify"}:
+        skip_event = _make_event(
+            node="postcheck",
+            started_at=started,
+            rationale=(
+                f"skipped postcheck LLM call: candidate is terminal "
+                f"({state.candidate_answer.source})"
+            ),
+            payload={
+                "mode": "postcheck",
+                "skipped": True,
+                "source": state.candidate_answer.source,
+            },
+        )
+        return {"trace_events": [*state.trace_events, skip_event]}
+
+    decision = await ctx.compliance.postcheck(
+        user_message=state.user_message,
+        candidate_answer=state.candidate_answer.text,
+        candidate_source=state.candidate_answer.source,
+    )
+
+    update: dict[str, Any] = {"compliance_postcheck": decision}
+    override_applied = False
+    rationale = f"category={decision.category} allowed={decision.allowed}"
+
+    if not decision.allowed:
+        replacement_text = (
+            decision.override_response
+            if (decision.override_response and decision.override_response.strip())
+            else CANONICAL_REFUSAL
+        )
+        update["candidate_answer"] = state.candidate_answer.model_copy(
+            update={"text": replacement_text, "source": "compliance", "citations": []}
+        )
+        override_applied = True
+        rationale = f"postcheck blocked ({decision.category}); applied override"
+
+    event = _make_event(
+        node="postcheck",
+        started_at=started,
+        model=ctx.compliance.config.model,
+        rationale=rationale,
+        payload={
+            "mode": "postcheck",
+            "category": decision.category,
+            "allowed": decision.allowed,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "override_applied": override_applied,
+        },
+    )
+    update["trace_events"] = [*state.trace_events, event]
+    return update
 
 
 async def finalize(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
@@ -493,6 +715,15 @@ def _parse_synthesis(content: str) -> _SynthesisOutput:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"synthesizer returned non-JSON content: {content!r}") from exc
     return _SynthesisOutput.model_validate(data)
+
+
+def _parse_verifier(content: str) -> VerifierOutput:
+    """Parse the verifier's structured JSON output."""
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"verifier returned non-JSON content: {content!r}") from exc
+    return VerifierOutput.model_validate(data)
 
 
 def _infer_source(

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.topics import SUPPORT_TOPIC_EXAMPLES
 from app.llm.client import ChatMessage, ChatRequest, LLMClient
+from app.prompts import load_prompt
 from app.retrieval.embeddings import EmbeddingGenerator
 from app.retrieval.models import RetrievalResult
 from app.retrieval.normalization import normalize_text
@@ -237,15 +238,7 @@ async def _run_general_knowledge_lookup(
             model=deps.chat_model,
             max_completion_tokens=deps.general_knowledge_max_tokens,
             messages=[
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "You are SupportSmith's fallback general-knowledge helper. "
-                        "Answer support-adjacent questions concisely. Do not invent "
-                        "company-specific procedures or product details. If the "
-                        "question is outside general support knowledge, say so."
-                    ),
-                ),
+                ChatMessage(role="system", content=load_prompt("general_knowledge").system),
                 ChatMessage(role="user", content=inputs.query),
             ],
         )

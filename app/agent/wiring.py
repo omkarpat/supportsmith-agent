@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from app.agent.compliance import ComplianceAgent, ComplianceConfig
 from app.agent.graph import build_graph
 from app.agent.nodes import NodeContext
 from app.agent.runner import SupportAgent
@@ -114,14 +115,27 @@ async def build_live_support_agent(
         search=search,
         chat_model=chosen_chat,
     )
+    compliance = ComplianceAgent(
+        llm=client,
+        config=ComplianceConfig(
+            model=settings.routing_model,
+            reasoning_effort=settings.routing_reasoning_effort,
+            max_completion_tokens=settings.compliance_max_completion_tokens,
+        ),
+    )
     ctx = NodeContext(
         llm=client,
         tools=ToolRegistry(deps),
+        compliance=compliance,
         chat_model=chosen_chat,
         reasoning_model=chosen_reasoning,
         planner_reasoning_effort=settings.planner_reasoning_effort,
         planner_max_completion_tokens=settings.planner_max_completion_tokens,
         synthesis_max_completion_tokens=settings.synthesis_max_completion_tokens,
+        verifier_model=chosen_reasoning,
+        verifier_reasoning_effort=settings.verifier_reasoning_effort,
+        verifier_max_completion_tokens=settings.verifier_max_completion_tokens,
         max_tool_iterations=settings.max_tool_iterations,
+        max_repair_attempts=settings.max_repair_attempts,
     )
     return SupportAgent(build_graph(ctx))

@@ -5,11 +5,9 @@ pytest run (see ``addopts`` in ``pyproject.toml``). It spends a small amount
 of OpenAI credit on every run, so we keep it tightly scoped and run it
 manually as a pre-merge / pre-release sanity check.
 
-To run::
-
-    docker compose up -d                   # postgres + auto-seed with live embeddings
-    SUPPORTSMITH_TEST_DATABASE_URL=postgresql://supportsmith:supportsmith@localhost:55432/supportsmith \
-        uv run --env-file .env pytest -m live tests/test_agent_live.py
+To run, start the compose stack with the seeded Postgres and then export
+the test DSN before invoking pytest with the live marker — see the
+README's "Test policy" section for the exact commands.
 
 Requires:
     - OPENAI_API_KEY (or SUPPORTSMITH_OPENAI_API_KEY) set in the environment

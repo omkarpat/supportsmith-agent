@@ -2,14 +2,18 @@
 
 A traceable multi-tool customer support agent with compliance guardrails, self-verification, and multi-turn memory.
 
-SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wires the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools (FAQ search, category browse, clarify, general-knowledge fallback, escalate, refuse), a 6-iteration cap, and per-turn structured traces.
+SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wired the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools, a 6-iteration cap, and per-turn structured traces. Phase 4 adds compliance and verification: a separate Compliance Agent runs precheck (before the graph) and postcheck (after synthesis) to gate on safety / leakage / policy, an inlined verifier checks grounding and recommends accept / repair / escalate / refuse with a single-repair budget, and every refusal path emits one canonical string while the response payload distinguishes which gate caught the request.
 
 ## What To Review First
 
 - FastAPI app factory: `app.main:create_app`
 - Agent graph: `app.agent.{state,nodes,graph,runner}` — read `graph.py` first for the edge map
 - Tool registry: `app.agent.tools` — six typed tools dispatched by JSON-schema-constrained plans
-- OpenAI adapter: `app.llm.openai` (Chat Completions only)
+- Compliance Agent: `app.agent.compliance` — precheck + postcheck gates, stateless LLM wrapper
+- Verifier: inlined in the `verify` node in `app.agent.nodes`; structured-output types live in `app.agent.verifier`
+- Refusal policy: `app.agent.policy` — `CANONICAL_REFUSAL` shared by every refusal path
+- Prompts: `prompts/` — planner, synthesizer, general_knowledge, verifier, compliance/{precheck,postcheck}
+- OpenAI adapter: `app.llm.openai` (Chat Completions + Embeddings)
 - Startup probe + live wiring: `app.agent.wiring`
 - Retrieval layer: `app.retrieval.{models,normalization,chunker,embeddings,repository,search}`
 - FAQ source loader: `app.retrieval.sources.take_home_faq`
@@ -146,24 +150,71 @@ The initial migration creates:
 
 ## Agent Graph
 
-`/chat` runs through a bounded LangGraph state machine:
+`/chat` runs through a bounded LangGraph state machine with three independent gates wrapped around the planning loop:
 
 ```text
-START -> load_context -> plan
+START -> load_context -> precheck
+            precheck ─ hard-block (prompt_injection / harmful /
+                                   severe sensitive_account)  ─> finalize  (CANONICAL_REFUSAL)
+            precheck ─ otherwise                              ─> plan
             plan ─ use_tool ─────────> execute_tool -> observe
                                                        observe ─ continue ─> plan
                                                        observe ─ ready ────> synthesize
                                                        observe ─ cap-hit ──> halt -> synthesize
             plan ─ clarify | escalate
                  | refuse | synthesize_now ──────────> execute_tool -> observe -> synthesize
-synthesize -> verify -> finalize -> END
+synthesize -> verify
+            verify ─ retry == repair AND repair_attempts < cap ─> synthesize  (single repair)
+            verify ─ otherwise                                  ─> postcheck
+postcheck -> finalize -> END
 ```
 
+### Nodes
+
+- **`precheck`** runs the **Compliance Agent** in precheck mode (routing model + low reasoning effort). Hard-blocks `prompt_injection`, `harmful_or_illegal`, and `sensitive_account` requests that need account-specific access we can't verify. Other categories pass through with the classification attached to state. Hard-blocks short-circuit to `finalize` and stamp `CANONICAL_REFUSAL` with `source=compliance` — zero tool / planner / synthesizer calls.
 - **`plan`** runs the *reasoning* model (`SUPPORTSMITH_REASONING_MODEL`, default `gpt-5.5`) with `reasoning_effort=high` and a JSON-schema response format. The planner emits a typed `Plan{intent, tool_name, arguments, rationale}`; LangChain `bind_tools` is *not* used so the dispatch surface stays explicit.
-- **`execute_tool`** validates `arguments` against the matching Pydantic input model and dispatches to one of six tools: `search_faq`, `get_faq_by_category`, `ask_user_clarification`, `general_knowledge_lookup`, `escalate_to_human`, `refuse`.
+- **`execute_tool`** validates `arguments` against the matching Pydantic input model and dispatches to one of six tools: `search_faq`, `get_faq_by_category`, `ask_user_clarification`, `general_knowledge_lookup`, `escalate_to_human`, `refuse`. The `refuse` tool is a cheap planner-level gatekeeper, distinct from compliance.
 - **`observe`** is a deterministic post-tool router (no LLM call) that flips between `synthesize` and another `plan` round, capping at `SUPPORTSMITH_MAX_TOOL_ITERATIONS` (default 6).
-- **`synthesize`** runs the *chat* model (`SUPPORTSMITH_CHAT_MODEL`, default `gpt-5.5`) and returns structured JSON `{text, cited_titles}`. The user sees only `text`; cited titles flow through `matched_questions` as metadata, with a cross-check that drops any title the synthesizer hallucinated.
-- **`verify`** is a Phase 4 placeholder; **`finalize`** stamps the `trace_id` and exits.
+- **`synthesize`** runs the *chat* model (`SUPPORTSMITH_CHAT_MODEL`, default `gpt-5.5`) and returns structured JSON `{text, cited_titles}`. Short-circuits the LLM call when the planner picked `refuse` and stamps `CANONICAL_REFUSAL` directly. The user sees only `text`; cited titles flow through `matched_questions` as metadata, with a cross-check that drops any title the synthesizer hallucinated.
+- **`verify`** runs the **Verifier** (reasoning model + medium reasoning effort, inlined into the node). Structured checks: addresses-user, grounding label (`faq_grounded` / `general_marked` / `clarification` / `escalation` / `refusal` / `unsupported`), leakage detection, safe source label, and a retry recommendation (`accept` / `repair` / `escalate` / `refuse`). Fail-fast: at most **one synthesize-only repair** for fixable wording or source-label issues. Budget exhaustion converts a second `repair` recommendation to `escalate` so the loop can never extend.
+- **`postcheck`** runs the **Compliance Agent** in postcheck mode on the verified candidate. Last gate before the response goes back. When `allowed=false` it replaces the candidate text with `override_response` (when supplied) or `CANONICAL_REFUSAL`, stamping `source=compliance`. Skips the LLM call entirely for terminal candidates (`refuse` / `escalate` / `clarify`) — those are already known-safe templates and the LLM has nothing to add.
+- **`finalize`** stamps the `trace_id` and exits.
+
+### Three refusal mechanisms, one canonical string
+
+Per the Phase 4 refusal policy, every refusal path produces the same user-facing string (`CANONICAL_REFUSAL`, declared in `app/agent/policy.py`). The response payload distinguishes which gate caught the request via `source`:
+
+| Mechanism | When it fires | Cost (LLM calls) | `source` |
+|---|---|---|---|
+| Compliance **precheck** hard-block | Pre-graph block on injection / harm / severe sensitive-account | 1 (precheck only) | `compliance` |
+| Planner `refuse` tool | Planner picks `refuse` mid-loop for off-topic | 4 (precheck, plan, verify, postcheck-skipped) | `refuse` |
+| **Verifier** refusal | Verifier detects leakage / unsafe content | 5 (full graph) | `refuse` |
+| Compliance **postcheck** override | Last-chance block on the synthesized answer | 5 + override | `compliance` |
+
+The planner-`refuse` path skips the synthesizer LLM call (the canonical string is stamped directly), and the postcheck skips its LLM call when the candidate is already terminal — both keep cost off the cheap-gatekeeper paths.
+
+### Compliance Agent and Verifier: stateless wrappers
+
+`ComplianceAgent` (`app/agent/compliance.py`) is a plain Python class with `precheck(user_message)` and `postcheck(user_message, candidate_answer, candidate_source)` methods. It has no internal state, no graph awareness — just an `LLMClient` plus prompt loading. The graph nodes own the handoff: each calls into the agent, writes the resulting `ComplianceDecision` to `GraphState.compliance_precheck` / `compliance_postcheck`, emits a structured trace event, and routes via the conditional edge.
+
+The verifier follows the same shape but is inlined directly into the `verify` node since it has only one caller. Promoting it back to a class is mechanical if Phase 6 evals or post-hoc audit need a standalone verifier surface.
+
+### Prompts in YAML
+
+All system prompts live under `prompts/` so the wording is reviewable in isolation from orchestration code. JSON schemas stay alongside the Pydantic models that consume them.
+
+```text
+prompts/
+├── planner.yaml
+├── synthesizer.yaml
+├── general_knowledge.yaml
+├── verifier.yaml
+└── compliance/
+    ├── precheck.yaml
+    └── postcheck.yaml
+```
+
+`app.prompts.load_prompt("compliance.precheck")` returns a typed `Prompt{name, version, system, notes}` with `lru_cache` so the YAML is read once.
 
 Every node appends a `TraceEvent` (node name, latency, model, token usage, short rationale) to graph state. Trace events are returned with the response under a stable `trace_id`; durable trace persistence lands in Phase 5.
 

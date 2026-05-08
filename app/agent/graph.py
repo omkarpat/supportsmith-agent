@@ -6,26 +6,37 @@ Edges (read top to bottom):
 
   START
     -> load_context
+    -> precheck
+       compliance_precheck.allowed=false AND hard-block category
+                                          -> finalize  (CANONICAL_REFUSAL stamped)
+       otherwise                          -> plan
     -> plan
-       intent==use_tool                -> execute_tool
+       intent==use_tool                   -> execute_tool
        intent in (clarify, escalate,
-                  refuse, synthesize_now) -> synthesize
+                  refuse)                  -> execute_tool
+       intent==synthesize_now              -> synthesize
     -> execute_tool
-       (always) -> observe
+       (always)                            -> observe
     -> observe
        most recent tool was terminal
-         (clarify | escalate | refuse)  -> synthesize
-       max_tool_iterations reached      -> halt -> synthesize
-       tool_iterations < cap            -> plan  (loop)
+         (clarify | escalate | refuse)    -> synthesize
+       max_tool_iterations reached        -> halt -> synthesize
+       tool_iterations < cap              -> plan  (loop)
     -> synthesize
     -> verify
+       retry_recommendation==repair AND
+       repair_attempts < cap              -> synthesize  (single repair)
+       otherwise                          -> postcheck
+    -> postcheck
+       (always)                           -> finalize  (override may have been
+                                                       applied to candidate)
     -> finalize
     -> END
 
 The cap on ``tool_iterations`` is enforced inside the observe→next router so
-the graph cannot exceed ``ctx.max_tool_iterations`` regardless of what the
-planner emits. When we cap out we stamp ``halted_reason`` and route to
-synthesize so the user still gets a graceful response.
+the graph cannot exceed ``ctx.max_tool_iterations``. The cap on repair
+attempts is enforced inside the verify→next router so the verifier cannot
+loop the synthesizer indefinitely.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agent.compliance import is_hard_block
 from app.agent.nodes import (
     NodeContext,
     execute_tool,
@@ -43,6 +55,8 @@ from app.agent.nodes import (
     load_context,
     observe,
     plan,
+    postcheck,
+    precheck,
     synthesize,
     verify,
 )
@@ -57,17 +71,27 @@ def build_graph(ctx: NodeContext) -> CompiledStateGraph:  # type: ignore[type-ar
     builder = StateGraph(GraphState)
 
     builder.add_node("load_context", _bind(load_context, ctx))
+    builder.add_node("precheck", _bind(precheck, ctx))
     builder.add_node("plan", _bind(plan, ctx))
     builder.add_node("execute_tool", _bind(execute_tool, ctx))
     builder.add_node("observe", _bind(observe, ctx))
     builder.add_node("halt", _halt_node)
     builder.add_node("synthesize", _bind(synthesize, ctx))
     builder.add_node("verify", _bind(verify, ctx))
+    builder.add_node("postcheck", _bind(postcheck, ctx))
     builder.add_node("finalize", _bind(finalize, ctx))
 
     builder.add_edge(START, "load_context")
-    builder.add_edge("load_context", "plan")
+    builder.add_edge("load_context", "precheck")
 
+    builder.add_conditional_edges(
+        "precheck",
+        _route_from_precheck,
+        {
+            "plan": "plan",
+            "finalize": "finalize",
+        },
+    )
     builder.add_conditional_edges(
         "plan",
         _route_from_plan,
@@ -89,13 +113,28 @@ def build_graph(ctx: NodeContext) -> CompiledStateGraph:  # type: ignore[type-ar
     )
     builder.add_edge("halt", "synthesize")
     builder.add_edge("synthesize", "verify")
-    builder.add_edge("verify", "finalize")
+
+    builder.add_conditional_edges(
+        "verify",
+        lambda state: _route_from_verify(state, ctx),
+        {
+            "synthesize": "synthesize",
+            "postcheck": "postcheck",
+        },
+    )
+    builder.add_edge("postcheck", "finalize")
     builder.add_edge("finalize", END)
 
     return builder.compile()
 
 
 # --- routers ------------------------------------------------------------------
+
+
+def _route_from_precheck(state: GraphState) -> str:
+    if state.compliance_precheck and is_hard_block(state.compliance_precheck):
+        return "finalize"
+    return "plan"
 
 
 def _route_from_plan(state: GraphState) -> str:
@@ -134,6 +173,21 @@ def _route_from_observe(state: GraphState, ctx: NodeContext) -> str:
         return "plan"
 
     return "synthesize"
+
+
+def _route_from_verify(state: GraphState, ctx: NodeContext) -> str:
+    """Verifier recommends repair → synthesize once; otherwise → postcheck.
+
+    The verify node enforces the budget by transforming repair → escalate
+    when ``repair_attempts >= max`` and stores the *effective* recommendation
+    on state. So if we see ``rec == "repair"`` here, the budget is still
+    spendable and we route back to synthesize for the actual repair pass.
+    """
+    if state.verification is None:
+        return "postcheck"
+    if state.verification.retry_recommendation == "repair":
+        return "synthesize"
+    return "postcheck"
 
 
 # --- helpers ------------------------------------------------------------------
