@@ -30,6 +30,28 @@ class Settings(BaseSettings):
         repr=False,
         validation_alias=AliasChoices("SUPPORTSMITH_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
+    langsmith_tracing: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "LANGSMITH_TRACING",
+            "SUPPORTSMITH_LANGSMITH_TRACING",
+        ),
+    )
+    langsmith_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices(
+            "LANGSMITH_API_KEY",
+            "SUPPORTSMITH_LANGSMITH_API_KEY",
+        ),
+    )
+    langsmith_project: str = Field(
+        default="supportsmith-agent",
+        validation_alias=AliasChoices(
+            "LANGSMITH_PROJECT",
+            "SUPPORTSMITH_LANGSMITH_PROJECT",
+        ),
+    )
     chat_model: str = "gpt-5.5"
     reasoning_model: str = "gpt-5.5"
     routing_model: str = "gpt-5.5"
@@ -37,6 +59,14 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     max_tool_iterations: int = 6
     max_repair_attempts: int = 1
+    context_user_turns: int = Field(
+        default=10,
+        ge=0,
+        validation_alias=AliasChoices(
+            "SUPPORTSMITH_CONTEXT_USER_TURNS",
+            "context_user_turns",
+        ),
+    )
     planner_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "high"
     routing_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "low"
     verifier_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "medium"

@@ -34,11 +34,17 @@ class AgentRequest(BaseModel):
 
 
 class AgentResponse(BaseModel):
-    """HTTP-facing support agent response."""
+    """HTTP-facing support agent response.
+
+    ``turn_number`` is set by the persistence flow (Phase 5+); for unit-style
+    callers that build an ``AgentResponse`` directly without going through
+    persistence, ``0`` indicates "not assigned a persisted turn number".
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     conversation_id: str
+    turn_number: int = 0
     response: str
     source: AgentSource
     matched_questions: list[str] = Field(default_factory=list)

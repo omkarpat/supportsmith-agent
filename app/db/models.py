@@ -1,12 +1,13 @@
 """SQLAlchemy models for SupportSmith persistence."""
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Numeric, Text, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -73,7 +74,12 @@ class Conversation(Base):
 
 
 class ConversationMessage(Base):
-    """One persisted conversation message."""
+    """One persisted conversation message.
+
+    ``role`` is constrained at the database layer to ``user`` / ``agent`` /
+    ``compliance``. Tool calls and tool outputs do **not** live here — they
+    belong on the trace blob. Only visible transcript messages persist.
+    """
 
     __tablename__ = "conversation_messages"
 
@@ -82,6 +88,7 @@ class ConversationMessage(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
+    turn_number: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_: Mapped[dict[str, Any]] = mapped_column(
@@ -90,41 +97,17 @@ class ConversationMessage(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    # LangSmith root run UUID for the agent / compliance message in this turn.
+    # Null on user rows and when LangSmith tracing is disabled. Stored as a
+    # column so operators can jump from a DB row to a LangSmith trace without
+    # searching JSON metadata.
+    langsmith_run_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
     )
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
-
-
-class TraceEvent(Base):
-    """Structured agent trace event."""
-
-    __tablename__ = "trace_events"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"),
-    )
-    trace_id: Mapped[str] = mapped_column(Text, nullable=False)
-    step_name: Mapped[str] = mapped_column(Text, nullable=False)
-    event_type: Mapped[str] = mapped_column(Text, nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text("'{}'::jsonb"),
-    )
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer)
-    total_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
 
 
 class Escalation(Base):

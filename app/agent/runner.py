@@ -1,10 +1,20 @@
-"""SupportAgent: thin runner that wraps the compiled LangGraph workflow."""
+"""SupportAgent: thin runner that wraps the compiled LangGraph workflow.
+
+LangSmith integration: ``respond`` reads the chat-flow-supplied root run id
++ thread metadata from instance attributes (set just before each call) and
+threads them through a ``@traceable``-decorated inner method so every turn
+becomes one root LangSmith run with our caller-chosen UUID. Child node runs
+inherit the parent automatically via the ``traceable`` context.
+"""
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 from langgraph.graph.state import CompiledStateGraph
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
 from app.agent.harness import AgentRequest, AgentResponse, AgentSource, CostSummary
 from app.agent.state import CandidateAnswer, GraphState
@@ -24,19 +34,79 @@ class SupportAgent:
         self.graph = graph
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
-        """Run the graph for one turn and project the final state into AgentResponse."""
+        """Run the graph for one turn and project the final state into AgentResponse.
+
+        The chat-flow orchestrator (``app.api.chat_flow``) stashes context
+        (prior user turns and the persisted ``turn_number``) on the agent
+        instance before calling this method. After the traced inner call we
+        also stash the LangSmith-assigned root run UUID on
+        ``_captured_langsmith_run_id`` so the orchestrator can persist it
+        on the agent message row. The public ``respond(request)`` signature
+        stays provider-neutral.
+        """
+        prior_turns = list(getattr(self, "_pending_prior_turns", []))
+        turn_number = int(getattr(self, "_pending_turn_number", 0))
+
+        langsmith_extra: dict[str, Any] = {
+            "metadata": {
+                "thread_id": request.conversation_id,
+                "conversation_id": request.conversation_id,
+                "turn_number": turn_number,
+            }
+        }
+        # Reset the captured slot so a previous turn's id can't leak forward
+        # if LangSmith is disabled this turn.
+        self._captured_langsmith_run_id = None
+
+        return await self._respond_traced(
+            request,
+            prior_turns=prior_turns,
+            turn_number=turn_number,
+            langsmith_extra=langsmith_extra,  # type: ignore[arg-type]
+        )
+
+    @traceable(name="chat_turn", run_type="chain")
+    async def _respond_traced(
+        self,
+        request: AgentRequest,
+        *,
+        prior_turns: list[Any],
+        turn_number: int,
+    ) -> AgentResponse:
+        """Inner traced entry point.
+
+        LangSmith mints the run UUID itself; we capture it from the active
+        run tree so the orchestrator can persist it. When tracing is
+        disabled, ``get_current_run_tree()`` returns ``None`` and we leave
+        the capture slot ``None`` to signal "no LangSmith run for this turn".
+        """
+        run_tree = get_current_run_tree()
+        if run_tree is not None:
+            self._captured_langsmith_run_id = run_tree.id
+
         turn_id = f"turn_{uuid4().hex}"
         initial = GraphState(
             conversation_id=request.conversation_id,
             turn_id=turn_id,
+            turn_number=turn_number,
             user_message=request.message,
+            prior_user_turns=prior_turns,
         )
         result = await self.graph.ainvoke(initial)
         final = GraphState.model_validate(result)
-        return _to_agent_response(final, conversation_id=request.conversation_id)
+        return _to_agent_response(
+            final,
+            conversation_id=request.conversation_id,
+            turn_number=turn_number,
+        )
 
 
-def _to_agent_response(state: GraphState, *, conversation_id: str) -> AgentResponse:
+def _to_agent_response(
+    state: GraphState,
+    *,
+    conversation_id: str,
+    turn_number: int = 0,
+) -> AgentResponse:
     candidate = state.candidate_answer
     response_text = candidate.text if candidate and candidate.text else _FALLBACK_TEXT
     source = _project_source(candidate)
@@ -52,6 +122,7 @@ def _to_agent_response(state: GraphState, *, conversation_id: str) -> AgentRespo
     )
     return AgentResponse(
         conversation_id=conversation_id,
+        turn_number=turn_number,
         response=response_text,
         source=source,
         matched_questions=list(candidate.citations) if candidate else [],

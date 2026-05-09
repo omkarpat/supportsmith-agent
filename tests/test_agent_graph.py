@@ -25,14 +25,7 @@ def _synth(text: str, *, cited_titles: list[str] | None = None) -> str:
     return json.dumps({"text": text, "cited_titles": cited_titles or []})
 
 
-def _client_post(harness, conversation_id: str, message: str):  # type: ignore[no-untyped-def]
-    return harness.client.post(
-        "/chat",
-        json={"conversation_id": conversation_id, "message": message},
-    )
-
-
-def test_general_knowledge_runs_only_after_low_confidence_search(
+async def test_general_knowledge_runs_only_after_low_confidence_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_support_agent_harness(
@@ -52,15 +45,15 @@ def test_general_knowledge_runs_only_after_low_confidence_search(
         ],
     )
 
-    response = _client_post(harness, "demo", "What protects against cosmic rays?")
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="What protects against cosmic rays?")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["tools_used"] == ["search_faq", "general_knowledge_lookup"]
-    assert payload["source"] == "general"
+    assert response.tools_used == ["search_faq", "general_knowledge_lookup"]
+    assert response.source == "general"
 
 
-def test_escalation_returns_structured_mock_handoff(
+async def test_escalation_returns_structured_mock_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_support_agent_harness(
@@ -75,15 +68,15 @@ def test_escalation_returns_structured_mock_handoff(
         ],
     )
 
-    response = _client_post(harness, "demo", "my account was hacked, help!")
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="my account was hacked, help!")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["tools_used"] == ["escalate_to_human"]
-    assert payload["source"] == "escalate"
+    assert response.tools_used == ["escalate_to_human"]
+    assert response.source == "escalate"
 
 
-def test_refusal_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_refusal_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
     # Synthesize short-circuits for the refuse tool (stamps CANONICAL_REFUSAL
     # without an LLM call), so no synth response needs scripting here.
     harness = build_support_agent_harness(
@@ -91,21 +84,18 @@ def test_refusal_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
         llm_responses=[_plan("refuse", tool_name="refuse", reason="off-topic")],
     )
 
-    response = _client_post(harness, "demo", "write me a poem about cats")
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="write me a poem about cats")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["tools_used"] == ["refuse"]
-    assert payload["source"] == "refuse"
+    assert response.tools_used == ["refuse"]
+    assert response.source == "refuse"
 
 
-def test_loop_limit_produces_graceful_fallback(
+async def test_loop_limit_produces_graceful_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the planner keeps low-confidence-searching forever, the graph halts."""
-    # Build a script that loops search_faq with low-confidence results until the
-    # graph hits max_tool_iterations. We need (max_iters + 1) plan responses
-    # (one extra plan call after the cap is hit, then the synthesizer).
     # max_tool_iterations defaults to 6 → exactly 6 plan calls before the
     # observe router sends us to halt → synthesize (one LLM call).
     plans = [_plan("use_tool", tool_name="search_faq", query="loop")] * 6
@@ -117,18 +107,17 @@ def test_loop_limit_produces_graceful_fallback(
         ],
     )
 
-    response = _client_post(harness, "demo", "trigger loop")
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="trigger loop")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
     # The graph should terminate cleanly even when the planner refuses to converge.
-    assert payload["verified"] is True
+    assert response.verified is True
     # tools_used should reflect the bounded loop, not exceed the cap of 6.
-    assert len(payload["tools_used"]) <= 1  # only one distinct tool name
-    assert payload["tools_used"] == ["search_faq"]
+    assert response.tools_used == ["search_faq"]
 
 
-def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
+async def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify per-node model selection (chat vs reasoning) is correct."""
@@ -147,7 +136,9 @@ def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
         ],
     )
 
-    _client_post(harness, "demo", "How do I reset my password?")
+    await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="How do I reset my password?")
+    )
 
     # Five LLM calls: precheck, plan, synthesize, verify, postcheck.
     assert len(harness.llm.requests) == 5
@@ -169,7 +160,7 @@ def test_planner_uses_reasoning_model_and_synthesizer_uses_chat_model(
     assert postcheck_request.reasoning_effort == "low"
 
 
-def test_matched_questions_only_includes_titles_synthesizer_actually_cited(
+async def test_matched_questions_only_includes_titles_synthesizer_actually_cited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The retrieval may surface 5 candidates, but matched_questions only lists
@@ -191,16 +182,17 @@ def test_matched_questions_only_includes_titles_synthesizer_actually_cited(
         ],
     )
 
-    response = _client_post(harness, "demo", "can I get a refund?")
-    payload = response.json()
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="can I get a refund?")
+    )
 
-    assert payload["matched_questions"] == [cited]
-    assert not_cited not in payload["matched_questions"]
+    assert response.matched_questions == [cited]
+    assert not_cited not in response.matched_questions
     # The user-facing text must NOT contain the citation; that's metadata only.
-    assert cited not in payload["response"]
+    assert cited not in response.response
 
 
-def test_matched_questions_is_empty_when_synthesizer_does_not_cite(
+async def test_matched_questions_is_empty_when_synthesizer_does_not_cite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_support_agent_harness(
@@ -217,13 +209,14 @@ def test_matched_questions_is_empty_when_synthesizer_does_not_cite(
         ],
     )
 
-    response = _client_post(harness, "demo", "refund?")
-    payload = response.json()
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="refund?")
+    )
 
-    assert payload["matched_questions"] == []
+    assert response.matched_questions == []
 
 
-def test_matched_questions_drops_titles_the_synthesizer_hallucinated(
+async def test_matched_questions_drops_titles_the_synthesizer_hallucinated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the synthesizer claims a title that retrieval never returned, drop it."""
@@ -240,10 +233,11 @@ def test_matched_questions_drops_titles_the_synthesizer_hallucinated(
         ],
     )
 
-    response = _client_post(harness, "demo", "refund?")
-    payload = response.json()
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="refund?")
+    )
 
-    assert payload["matched_questions"] == [real]
+    assert response.matched_questions == [real]
 
 
 async def test_agent_emits_trace_id_per_turn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,11 +249,9 @@ async def test_agent_emits_trace_id_per_turn(monkeypatch: pytest.MonkeyPatch) ->
         ],
     )
 
-    response = _client_post(harness, "demo", "x")
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="x")
+    )
 
-    payload = response.json()
-    assert payload["trace_id"].startswith("turn_")
-    assert payload["conversation_id"] == "demo"
-
-
-_ = AgentRequest  # imported so type-check sees the public contract
+    assert response.trace_id.startswith("turn_")
+    assert response.conversation_id == "demo"

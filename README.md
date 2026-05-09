@@ -2,18 +2,22 @@
 
 A traceable multi-tool customer support agent with compliance guardrails, self-verification, and multi-turn memory.
 
-SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wired the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools, a 6-iteration cap, and per-turn structured traces. Phase 4 adds compliance and verification: a separate Compliance Agent runs precheck (before the graph) and postcheck (after synthesis) to gate on safety / leakage / policy, an inlined verifier checks grounding and recommends accept / repair / escalate / refuse with a single-repair budget, and every refusal path emits one canonical string while the response payload distinguishes which gate caught the request.
+SupportSmith is being built for the Knotch AI Engineering take-home. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wired the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools, a 6-iteration cap, and per-turn structured traces. Phase 4 added compliance and verification: a separate Compliance Agent runs precheck (before the graph) and postcheck (after synthesis), an inlined verifier checks grounding and recommends accept / repair / escalate / refuse with a single-repair budget, and every refusal path emits one canonical string. Phase 5 makes conversations durable and inspectable: Postgres stores conversations + visible `user`/`agent`/`compliance` messages with `turn_number`, the chat flow loads the last N user turns as context for the planner, retry+fallback wraps the agent for transient OpenAI failures, and tracing moves to LangSmith — every turn becomes a root run with `metadata.thread_id == conversation_id` and the assigned run UUID is captured back onto the agent message row, so trace endpoints can do an O(1) `read_run` per turn or filter the thread's runs by metadata.
 
 ## What To Review First
 
 - FastAPI app factory: `app.main:create_app`
+- Chat flow + persistence: `app.api.chat_flow` — turn lifecycle, retry/fallback, captured `langsmith_run_id`
+- Conversation routes: `app.api.routes.conversations` — write surface (`/chat`, `/chat/{id}`) and read surface (messages + LangSmith read-through trace endpoints)
+- LangSmith read-through helpers: `app.api.langsmith_traces`
+- Persistence layer: `app.persistence.{conversations,messages}` — typed repositories
 - Agent graph: `app.agent.{state,nodes,graph,runner}` — read `graph.py` first for the edge map
 - Tool registry: `app.agent.tools` — six typed tools dispatched by JSON-schema-constrained plans
 - Compliance Agent: `app.agent.compliance` — precheck + postcheck gates, stateless LLM wrapper
 - Verifier: inlined in the `verify` node in `app.agent.nodes`; structured-output types live in `app.agent.verifier`
 - Refusal policy: `app.agent.policy` — `CANONICAL_REFUSAL` shared by every refusal path
 - Prompts: `prompts/` — planner, synthesizer, general_knowledge, verifier, compliance/{precheck,postcheck}
-- OpenAI adapter: `app.llm.openai` (Chat Completions + Embeddings)
+- OpenAI adapter: `app.llm.openai` (Chat Completions + Embeddings, both `@traceable`)
 - Startup probe + live wiring: `app.agent.wiring`
 - Retrieval layer: `app.retrieval.{models,normalization,chunker,embeddings,repository,search}`
 - FAQ source loader: `app.retrieval.sources.take_home_faq`
@@ -50,29 +54,48 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
-Phase 1 conversation scaffold:
+Start a new conversation. The response carries a freshly-minted
+`conversation_id` and `turn_number=1`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"How do I reset my account?"}'
+  -d '{"message":"How do I reset my password?"}'
 ```
 
-Continue an existing conversation through the convenience chat endpoint:
+Resume an existing conversation by id (404 if the id is unknown — Phase 5
+deliberately fails loudly on typos):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"conversation_id":"demo","message":"I forgot my password"}'
+  -d '{"conversation_id":"<id>","message":"thanks, what about 2FA?"}'
+
+curl -X POST http://127.0.0.1:8000/chat/<id> \
+  -H "Content-Type: application/json" \
+  -d '{"message":"thanks, what about 2FA?"}'
 ```
 
-Explicit conversation endpoint:
+Read the persisted message history (chronological, with the metadata you
+need to render a transcript):
 
 ```bash
-curl -X POST http://127.0.0.1:8000/conversations/demo/messages \
-  -H "Content-Type: application/json" \
-  -d '{"message":"How do I reset my account?"}'
+curl http://127.0.0.1:8000/conversations/<id>/messages
+curl http://127.0.0.1:8000/conversations/<id>/turns/1/messages
 ```
+
+Read traces. Per-turn does an O(1) `read_run` against the LangSmith UUID
+captured on the agent message row; the conversation-level endpoint does a
+metadata `list_runs` filter on `thread_id == conversation_id`:
+
+```bash
+curl http://127.0.0.1:8000/conversations/<id>/turns/1/trace
+curl http://127.0.0.1:8000/conversations/<id>/trace
+```
+
+Both trace endpoints return `503 LangSmith tracing unavailable` when
+`LANGSMITH_TRACING` is off / no API key, and `404 Trace not found` when
+the thread/turn has no matching runs in LangSmith.
 
 ## Checks
 
@@ -147,6 +170,71 @@ The initial migration creates:
 - `conversations` and `conversation_messages`.
 - `trace_events` for agent observability.
 - `escalations` for handoff records.
+
+## Persistence & Tracing
+
+Phase 5 splits product state from trace state and runs them on different
+systems:
+
+- **Postgres** is the source of truth for conversations + visible
+  `user`/`agent`/`compliance` messages. The `conversations` row is created
+  inside a short transaction before the agent runs; the user message and
+  the agent reply are persisted in their own short transactions so we never
+  hold a DB connection across an OpenAI call. The local DB has **no trace
+  table** — we removed `trace_events` entirely.
+- **LangSmith** owns the detailed graph / node / tool traces. Each `/chat`
+  turn is one LangSmith *root run*; child runs (precheck, plan,
+  execute_tool, observe, synthesize, verify, postcheck, finalize, plus
+  every OpenAI Chat Completions call) inherit the root via the `@traceable`
+  decorator's context propagation. Multiple turns are stitched into one
+  *thread* in the LangSmith UI by sharing
+  `metadata.thread_id == conversation_id`.
+- **The bridge** is one column on `conversation_messages`:
+  `langsmith_run_id UUID NULL`. We capture the LangSmith-assigned root run
+  UUID at the `@traceable` boundary via `get_current_run_tree().id` and
+  persist it on the agent / compliance message row. The per-turn trace
+  endpoint then does an O(1) `client.read_run(run_id)`; the
+  conversation-level endpoint uses `client.list_runs(filter=...)` keyed on
+  `metadata.thread_id`.
+
+### Context loading
+
+Before each turn, the chat flow loads the most recent
+`SUPPORTSMITH_CONTEXT_USER_TURNS` (default 10) prior `user` turns plus
+their visible `agent`/`compliance` replies from Postgres and threads them
+into `GraphState.prior_user_turns`. The planner and synthesizer prompts
+render this history as a `Prior conversation:` section. Tool calls and
+internal rationales are deliberately not persisted as messages — those
+live on the LangSmith trace.
+
+### Retry + fallback
+
+`app.api.chat_flow._respond_with_retry` wraps `agent.respond(...)` with
+**one** retry on transient OpenAI / network exceptions
+(`LLMProviderError`, `APIError`, `APIConnectionError`, `APITimeoutError`,
+`RateLimitError`, `asyncio.TimeoutError`, `ConnectionError`). On a second
+failure the user gets a deterministic fallback message and the persisted
+agent message metadata records `status="failed_recovered"` (or
+`failed_unhandled` when even the fallback path failed). Hard validation
+errors are not retried — they bubble as proper HTTP errors.
+
+### LangSmith setup
+
+```bash
+# in .env
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_PROJECT=supportsmith-agent
+```
+
+The `langsmith` SDK reads these env vars directly. Tracing is fully
+optional — when `LANGSMITH_TRACING=false` (or the API key is missing),
+the `@traceable` decorators short-circuit, `get_current_run_tree()`
+returns `None`, and `langsmith_run_id` is persisted as `NULL` on the
+agent message row. Trace endpoints surface
+`503 LangSmith tracing unavailable` in that case so callers don't have
+to guess why their lookups are empty.
 
 ## Agent Graph
 
