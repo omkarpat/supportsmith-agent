@@ -1,14 +1,21 @@
-from uuid import UUID
+"""Graph-driven conversation behavior with scripted LLM responses.
+
+These tests bypass FastAPI and call ``agent.respond(...)`` directly. The
+HTTP / persistence surface is exercised by ``tests/test_chat_persistence.py``,
+which is gated on a real Postgres URL.
+"""
+
+from __future__ import annotations
+
+import json
 
 import pytest
 
-from tests.conftest import build_support_agent_harness, faq_result
+from app.agent.harness import AgentRequest
+from tests.conftest import build_support_agent_harness
 
 
 def _plan(intent: str, *, tool_name: str | None = None, **arguments: object) -> str:
-    """Render the JSON plan payload that the planner LLM is mocked to return."""
-    import json
-
     return json.dumps(
         {
             "intent": intent,
@@ -20,13 +27,10 @@ def _plan(intent: str, *, tool_name: str | None = None, **arguments: object) -> 
 
 
 def _synth(text: str, *, cited_titles: list[str] | None = None) -> str:
-    """Render the JSON the synthesizer LLM is mocked to return."""
-    import json
-
     return json.dumps({"text": text, "cited_titles": cited_titles or []})
 
 
-def test_chat_routes_ambiguous_message_through_clarify_tool(
+async def test_chat_routes_ambiguous_message_through_clarify_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_support_agent_harness(
@@ -41,20 +45,22 @@ def test_chat_routes_ambiguous_message_through_clarify_tool(
         ],
     )
 
-    response = harness.client.post("/chat", json={"message": "x"})
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="x")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["source"] == "clarify"
-    assert payload["tools_used"] == ["ask_user_clarification"]
-    assert payload["verified"] is True
-    assert payload["trace_id"].startswith("turn_")
-    assert "more about what you need" in payload["response"].lower()
+    assert response.source == "clarify"
+    assert response.tools_used == ["ask_user_clarification"]
+    assert response.verified is True
+    assert response.trace_id.startswith("turn_")
+    assert "more about what you need" in response.response.lower()
 
 
-def test_chat_routes_password_reset_through_search_faq(
+async def test_chat_routes_password_reset_through_search_faq(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.conftest import faq_result
+
     title = "What steps do I take to reset my password?"
     harness = build_support_agent_harness(
         monkeypatch,
@@ -76,24 +82,22 @@ def test_chat_routes_password_reset_through_search_faq(
         ],
     )
 
-    response = harness.client.post(
-        "/chat",
-        json={"conversation_id": "demo", "message": "How do I reset my password?"},
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="demo", message="How do I reset my password?")
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["conversation_id"] == "demo"
-    assert payload["source"] == "faq"
-    assert payload["tools_used"] == ["search_faq"]
-    assert payload["matched_questions"] == [title]
-    assert payload["response"] == "Go to Settings > Security and select Change Password."
-    # Make sure the inline citation noise is gone — the title shouldn't leak
-    # into the user-facing prose.
-    assert title not in payload["response"]
+    assert response.conversation_id == "demo"
+    assert response.source == "faq"
+    assert response.tools_used == ["search_faq"]
+    assert response.matched_questions == [title]
+    assert response.response == "Go to Settings > Security and select Change Password."
+    assert title not in response.response
 
 
-def test_chat_mints_conversation_id_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_conversation_id_round_trips_through_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The agent echoes back the conversation_id it was given on the request."""
     harness = build_support_agent_harness(
         monkeypatch,
         llm_responses=[
@@ -106,17 +110,9 @@ def test_chat_mints_conversation_id_when_missing(monkeypatch: pytest.MonkeyPatch
         ],
     )
 
-    response = harness.client.post("/chat", json={"message": "Hello"})
+    response = await harness.agent.respond(
+        AgentRequest(conversation_id="my-conversation", message="Hello")
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert UUID(payload["conversation_id"])
-    assert payload["source"] == "clarify"
-
-
-def test_conversation_message_rejects_empty_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    harness = build_support_agent_harness(monkeypatch, llm_responses=[])
-
-    response = harness.client.post("/conversations/abc-123/messages", json={"message": ""})
-
-    assert response.status_code == 422
+    assert response.conversation_id == "my-conversation"
+    assert response.source == "clarify"

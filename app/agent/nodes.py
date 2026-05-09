@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from langsmith import traceable
 from pydantic import BaseModel, ConfigDict
 
 from app.agent.compliance import ComplianceAgent, is_hard_block
@@ -209,6 +210,7 @@ def _output_to_dict(output: object) -> dict[str, Any]:
 # --- nodes --------------------------------------------------------------------
 
 
+@traceable(name="load_context", run_type="chain")
 async def load_context(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
     """Phase 3 stub: durable history loading lands in Phase 5.
 
@@ -223,6 +225,7 @@ async def load_context(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
     return {"trace_events": [*state.trace_events, event]}
 
 
+@traceable(name="plan", run_type="chain")
 async def plan(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Ask the reasoning model for a structured next-step plan."""
     started = _now()
@@ -257,6 +260,7 @@ async def plan(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     }
 
 
+@traceable(name="execute_tool", run_type="tool")
 async def execute_tool(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Validate the planned arguments and run the chosen tool."""
     started = _now()
@@ -308,6 +312,7 @@ async def execute_tool(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     }
 
 
+@traceable(name="observe", run_type="chain")
 async def observe(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Decide whether the most recent observation is enough to synthesize.
 
@@ -343,6 +348,7 @@ async def observe(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     return {"trace_events": [*state.trace_events, event]}
 
 
+@traceable(name="synthesize", run_type="chain")
 async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Compose the final answer using the chat model and observation context.
 
@@ -372,6 +378,12 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         }
 
     rendered_observations = _render_observations(state)
+    rendered_history = _render_prior_turns(state)
+    synthesis_user_content_sections: list[str] = []
+    if rendered_history:
+        synthesis_user_content_sections.append(f"Prior conversation:\n{rendered_history}")
+    synthesis_user_content_sections.append(f"User message: {state.user_message}")
+    synthesis_user_content_sections.append(f"Tool observations:\n{rendered_observations}")
 
     response = await ctx.llm.complete(
         ChatRequest(
@@ -384,13 +396,7 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
             ),
             messages=[
                 ChatMessage(role="system", content=load_prompt("synthesizer").system),
-                ChatMessage(
-                    role="user",
-                    content=(
-                        f"User message: {state.user_message}\n\n"
-                        f"Tool observations:\n{rendered_observations}"
-                    ),
-                ),
+                ChatMessage(role="user", content="\n\n".join(synthesis_user_content_sections)),
             ],
         )
     )
@@ -427,6 +433,7 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     }
 
 
+@traceable(name="precheck", run_type="chain")
 async def precheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Run the compliance precheck on the user message before planning.
 
@@ -468,6 +475,7 @@ async def precheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     return update
 
 
+@traceable(name="verify", run_type="chain")
 async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Run the verifier on the candidate answer and decide accept/repair/reject.
 
@@ -564,6 +572,7 @@ async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     return update
 
 
+@traceable(name="postcheck", run_type="chain")
 async def postcheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Run the compliance postcheck on the verified candidate answer.
 
@@ -637,6 +646,7 @@ async def postcheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     return update
 
 
+@traceable(name="finalize", run_type="chain")
 async def finalize(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
     """Terminal node: emits a trace event noting the outcome."""
     started = _now()
@@ -658,12 +668,34 @@ async def finalize(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
 
 
 def _render_plan_prompt(state: GraphState) -> str:
-    if not state.observations:
-        return f'User message: "{state.user_message}"\n\nNo prior observations.'
-    return (
-        f'User message: "{state.user_message}"\n\n'
-        f"Prior observations:\n{_render_observations(state)}"
-    )
+    sections: list[str] = []
+    history = _render_prior_turns(state)
+    if history:
+        sections.append(f"Prior conversation:\n{history}")
+    sections.append(f'User message: "{state.user_message}"')
+    if state.observations:
+        sections.append(f"Prior observations this turn:\n{_render_observations(state)}")
+    else:
+        sections.append("No prior observations this turn.")
+    return "\n\n".join(sections)
+
+
+def _render_prior_turns(state: GraphState) -> str:
+    """Render the persisted user/bot history fed into this turn.
+
+    Empty when the conversation is brand new. When present, only the
+    user-facing transcript is included — never tool calls or agent rationales,
+    which live on the trace.
+    """
+    if not state.prior_user_turns:
+        return ""
+    lines: list[str] = []
+    for prior in state.prior_user_turns:
+        lines.append(f"Turn {prior.turn_number} user: {prior.user_message}")
+        if prior.bot_reply:
+            role = prior.bot_role or "agent"
+            lines.append(f"Turn {prior.turn_number} {role}: {prior.bot_reply}")
+    return "\n".join(lines)
 
 
 def _render_observations(state: GraphState) -> str:

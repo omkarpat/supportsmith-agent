@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent.compliance import ComplianceDecision
 from app.agent.tools import ToolName
 from app.agent.verifier import VerifierOutput
+from app.persistence.messages import PriorTurn
 
 PlanIntent = Literal[
     "use_tool",
@@ -132,7 +133,9 @@ class GraphState(BaseModel):
 
     conversation_id: str
     turn_id: str
+    turn_number: int = 0
     user_message: str
+    prior_user_turns: list[PriorTurn] = Field(default_factory=list)
     plan: Plan | None = None
     observations: list[ToolObservation] = Field(default_factory=list)
     tool_iterations: int = 0

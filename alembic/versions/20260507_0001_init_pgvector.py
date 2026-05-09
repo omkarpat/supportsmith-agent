@@ -91,6 +91,7 @@ def upgrade() -> None:
             sa.ForeignKey("conversations.id", ondelete="CASCADE"),
             nullable=False,
         ),
+        sa.Column("turn_number", sa.Integer(), nullable=False),
         sa.Column("role", sa.Text(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column(
@@ -99,11 +100,21 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
         ),
+        # Captures the LangSmith root run UUID for the agent / compliance
+        # message in this turn. Null on the inbound user row and when
+        # tracing is disabled. Stored as a column (not just metadata) so
+        # operators can jump from a DB row directly to a LangSmith trace
+        # without searching JSON.
+        sa.Column("langsmith_run_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,
             server_default=sa.func.now(),
+        ),
+        sa.CheckConstraint(
+            "role in ('user', 'agent', 'compliance')",
+            name="conversation_messages_role_check",
         ),
     )
     op.create_index(
@@ -111,37 +122,11 @@ def upgrade() -> None:
         "conversation_messages",
         ["conversation_id", "created_at"],
     )
-
-    op.create_table(
-        "trace_events",
-        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
-        sa.Column(
-            "conversation_id",
-            sa.Text(),
-            sa.ForeignKey("conversations.id", ondelete="CASCADE"),
-        ),
-        sa.Column("trace_id", sa.Text(), nullable=False),
-        sa.Column("step_name", sa.Text(), nullable=False),
-        sa.Column("event_type", sa.Text(), nullable=False),
-        sa.Column(
-            "payload",
-            postgresql.JSONB(),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-        sa.Column("latency_ms", sa.Integer()),
-        sa.Column("prompt_tokens", sa.Integer()),
-        sa.Column("completion_tokens", sa.Integer()),
-        sa.Column("total_tokens", sa.Integer()),
-        sa.Column("estimated_cost_usd", sa.Numeric(12, 8)),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.func.now(),
-        ),
+    op.create_index(
+        "conversation_messages_conversation_turn_idx",
+        "conversation_messages",
+        ["conversation_id", "turn_number"],
     )
-    op.create_index("trace_events_trace_idx", "trace_events", ["trace_id", "created_at"])
 
     op.create_table(
         "escalations",
@@ -171,8 +156,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Drop initial persistence and vector-search tables."""
     op.drop_table("escalations")
-    op.drop_index("trace_events_trace_idx", table_name="trace_events")
-    op.drop_table("trace_events")
+    op.drop_index(
+        "conversation_messages_conversation_turn_idx",
+        table_name="conversation_messages",
+    )
     op.drop_index("conversation_messages_conversation_idx", table_name="conversation_messages")
     op.drop_table("conversation_messages")
     op.drop_table("conversations")

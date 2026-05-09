@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langsmith import traceable
 from openai import APIError, AsyncOpenAI
 
 from app.llm.client import (
@@ -42,6 +43,7 @@ class OpenAIChatCompletionsClient(LLMClient):
     ) -> None:
         self.client = client or AsyncOpenAI(api_key=api_key)
 
+    @traceable(name="openai_chat_completion", run_type="llm")
     async def complete(self, request: ChatRequest) -> ChatResponse:
         """Call ``/v1/chat/completions`` and map the response into a typed shape."""
         if request.model is None:
@@ -109,6 +111,7 @@ class OpenAIEmbeddingClient(EmbeddingClient):
     ) -> None:
         self.client = client or AsyncOpenAI(api_key=api_key)
 
+    @traceable(name="openai_embeddings", run_type="embedding")
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """Call ``/v1/embeddings`` and map the response into a typed shape."""
         if request.model is None:

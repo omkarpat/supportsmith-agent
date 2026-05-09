@@ -77,9 +77,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
 @dataclass
 class SupportAgentHarness:
-    """A TestClient + ScriptedLLMClient pair for graph-driven endpoint tests."""
+    """SupportAgent + scripted LLM pair for graph-level tests.
 
-    client: TestClient
+    Tests call ``await harness.agent.respond(AgentRequest(...))`` directly,
+    bypassing FastAPI / persistence. Persistence is exercised by the
+    Postgres-gated integration tests in ``tests/test_chat_persistence.py``.
+    """
+
+    agent: SupportAgent
     llm: ScriptedLLMClient
     search: FakeSupportSearch
 
@@ -146,7 +151,7 @@ def build_support_agent_harness(
     canned_search_results: Iterable[RetrievalResult] | None = None,
     wrap_gates: bool = True,
 ) -> SupportAgentHarness:
-    """Build a TestClient whose ``/chat`` flows through the SupportAgent graph.
+    """Build a SupportAgent backed by a scripted LLM client.
 
     By default, ``wrap_gates=True`` automatically prepends a "support_allowed"
     precheck and appends an "accept" verifier verdict + "support_allowed"
@@ -155,15 +160,13 @@ def build_support_agent_harness(
     verifier-specific tests pass ``wrap_gates=False`` and script every
     response explicitly.
 
-    The test-mode lifespan does not install an agent, so we set
-    ``app.state.agent`` after the TestClient enters lifespan but before any
-    request flies.
+    Returns the agent directly (no FastAPI / DB). Tests call
+    ``await harness.agent.respond(...)`` to exercise the graph.
     """
-    monkeypatch.setattr(
-        PostgresDatabase,
-        "from_settings",
-        classmethod(lambda cls, settings: FakeDatabase()),
-    )
+    # ``monkeypatch`` is accepted for symmetry with the older harness signature
+    # and in case a test wants to swap something at the module level; we don't
+    # use it directly here because no FastAPI app is built.
+    del monkeypatch
 
     inner = list(llm_responses)
     if wrap_gates:
@@ -204,12 +207,7 @@ def build_support_agent_harness(
         max_repair_attempts=1,
     )
     agent = SupportAgent(build_graph(ctx))
-
-    app = create_app(_test_settings())
-    test_client = TestClient(app)
-    test_client.__enter__()
-    app.state.agent = agent
-    return SupportAgentHarness(client=test_client, llm=llm, search=search)
+    return SupportAgentHarness(agent=agent, llm=llm, search=search)
 
 
 def faq_result(**overrides: Any) -> RetrievalResult:
