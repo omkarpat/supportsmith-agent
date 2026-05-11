@@ -98,26 +98,21 @@ class FirecrawlSDKClient:
 
     def _new_sdk(self) -> Any:
         try:
-            from firecrawl import FirecrawlApp  # type: ignore[import-untyped]
+            from firecrawl import Firecrawl  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise FirecrawlError(
                 "firecrawl-py is not installed; add it to dependencies"
             ) from exc
-        return FirecrawlApp(api_key=self._api_key)
+        return Firecrawl(api_key=self._api_key)
 
     async def map_site(self, site_url: str, *, limit: int | None = None) -> FirecrawlMap:
         def _call() -> FirecrawlMap:
             sdk = self._new_sdk()
             try:
-                params: dict[str, Any] = {}
-                if limit is not None:
-                    params["limit"] = limit
-                # firecrawl-py exposes `map_url`; the response shape across recent
-                # SDK versions is either {"links": [...]} or a list-of-strings.
-                raw = sdk.map_url(site_url, params=params) if params else sdk.map_url(site_url)
+                result = sdk.map(site_url, limit=limit) if limit is not None else sdk.map(site_url)
             except Exception as exc:  # pragma: no cover - network surface
                 raise FirecrawlError(f"firecrawl map failed: {exc}") from exc
-            urls = _coerce_url_list(raw)
+            urls = _coerce_url_list(result)
             return FirecrawlMap(site_url=site_url, urls=urls)
 
         return await asyncio.to_thread(_call)
@@ -130,11 +125,12 @@ class FirecrawlSDKClient:
     ) -> FirecrawlCrawl:
         def _call() -> FirecrawlCrawl:
             sdk = self._new_sdk()
-            params = _crawl_params(options)
+            kwargs = _crawl_kwargs(options)
             try:
-                raw = sdk.crawl_url(site_url, params=params, poll_interval=5)
+                result = sdk.crawl(site_url, **kwargs)
             except Exception as exc:  # pragma: no cover - network surface
                 raise FirecrawlError(f"firecrawl crawl failed: {exc}") from exc
+            raw = result.model_dump() if hasattr(result, "model_dump") else result
             pages = _coerce_pages(raw)
             return FirecrawlCrawl(
                 job_id=_extract_job_id(raw),
@@ -146,37 +142,51 @@ class FirecrawlSDKClient:
         return await asyncio.to_thread(_call)
 
 
-def _crawl_params(options: CrawlOptions) -> dict[str, Any]:
-    """Translate our :class:`CrawlOptions` to the SDK's parameter dict."""
-    scrape_options: dict[str, Any] = {
-        "formats": ["markdown"],
-        "onlyMainContent": options.only_main_content,
-    }
-    params: dict[str, Any] = {
+def _crawl_kwargs(options: CrawlOptions) -> dict[str, Any]:
+    """Translate our :class:`CrawlOptions` to firecrawl-py v2 keyword args."""
+    from firecrawl.v2.types import ScrapeOptions  # type: ignore[import-untyped]
+
+    kwargs: dict[str, Any] = {
         "limit": options.limit,
-        "scrapeOptions": scrape_options,
-        "allowExternalLinks": options.allow_external_links,
-        "allowBackwardLinks": False,
-        "ignoreQueryParameters": options.ignore_query_parameters,
+        "scrape_options": ScrapeOptions(
+            formats=["markdown"],
+            only_main_content=options.only_main_content,
+        ),
+        "allow_external_links": options.allow_external_links,
+        "allow_subdomains": options.allow_subdomains,
+        "ignore_query_parameters": options.ignore_query_parameters,
+        "poll_interval": 5,
     }
     if options.max_depth is not None:
-        params["maxDepth"] = options.max_depth
+        kwargs["max_discovery_depth"] = options.max_depth
     if options.include_paths:
-        params["includePaths"] = list(options.include_paths)
+        kwargs["include_paths"] = list(options.include_paths)
     if options.exclude_paths:
-        params["excludePaths"] = list(options.exclude_paths)
-    if options.allow_subdomains:
-        params["allowSubdomains"] = True
-    return params
+        kwargs["exclude_paths"] = list(options.exclude_paths)
+    return kwargs
 
 
 def _coerce_url_list(raw: Any) -> list[str]:
-    """Accept either ``{"links": [...]}`` or a list-of-strings from the SDK."""
+    """Accept v2 MapData, ``{"links": [...]}``, or a list-of-strings from the SDK."""
+    links = getattr(raw, "links", None)
+    if isinstance(links, list):
+        urls: list[str] = []
+        for item in links:
+            url = getattr(item, "url", None) if not isinstance(item, str) else item
+            if isinstance(url, str) and url:
+                urls.append(url)
+        return urls
     if isinstance(raw, dict):
         for key in ("links", "urls", "data"):
             value = raw.get(key)
             if isinstance(value, list):
-                return [str(item) for item in value if isinstance(item, str)]
+                out: list[str] = []
+                for item in value:
+                    if isinstance(item, str):
+                        out.append(item)
+                    elif isinstance(item, dict) and isinstance(item.get("url"), str):
+                        out.append(item["url"])
+                return out
         return []
     if isinstance(raw, list):
         return [str(item) for item in raw if isinstance(item, str)]
@@ -207,6 +217,7 @@ def _coerce_pages(raw: Any) -> list[FirecrawlPage]:
             continue
         url = (
             metadata.get("sourceURL")
+            or metadata.get("source_url")
             or metadata.get("url")
             or entry.get("url")
             or entry.get("sourceURL")
@@ -217,8 +228,12 @@ def _coerce_pages(raw: Any) -> list[FirecrawlPage]:
             FirecrawlPage(
                 url=url,
                 canonical_url=metadata.get("canonicalURL") or metadata.get("canonical"),
-                title=metadata.get("title") or metadata.get("ogTitle"),
-                description=metadata.get("description") or metadata.get("ogDescription"),
+                title=metadata.get("title") or metadata.get("ogTitle") or metadata.get("og_title"),
+                description=(
+                    metadata.get("description")
+                    or metadata.get("ogDescription")
+                    or metadata.get("og_description")
+                ),
                 markdown=markdown,
                 html=entry.get("html") if isinstance(entry.get("html"), str) else None,
                 metadata=metadata,
