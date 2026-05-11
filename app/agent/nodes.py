@@ -137,6 +137,7 @@ _VERIFIER_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": [
                 "faq_grounded",
+                "website_grounded",
                 "general_marked",
                 "clarification",
                 "escalation",
@@ -522,11 +523,16 @@ async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         raise RuntimeError("verify called without a candidate_answer in state")
 
     rendered_observations = _render_observations(state)
+    rendered_cited_chunks = _render_chunks_for_synthesis(
+        state.candidate_answer.cited_chunks
+    )
     verifier_user_content = (
         f'User message: "{state.user_message}"\n\n'
         f"Candidate answer source label: {state.candidate_answer.source}\n\n"
         f"Candidate answer text:\n{state.candidate_answer.text}\n\n"
-        f"Tool observations:\n{rendered_observations}"
+        f"Cited chunks (the grounding evidence the synthesizer used):\n"
+        f"{rendered_cited_chunks}\n\n"
+        f"Tool observations (compact, may be truncated):\n{rendered_observations}"
     )
     response = await ctx.llm.complete(
         ChatRequest(

@@ -1,11 +1,17 @@
 name: verifier
-version: 1
+version: 2
 notes: |
   Quality / grounding gate. Runs on the reasoning model with medium
   reasoning effort because checking answer grounding and leakage needs
   more care than the precheck pass. Fail-fast policy: at most one
   synthesize-only repair. No replanning unless the verifier names a
   specific unused observation.
+
+  v2: added `website_grounded` to the grounding enum and `website` to the
+  safe-source-label list to match Phase 7's website ingestion path. The
+  synthesizer stamps source="website" when cited chunks include website
+  rows; the post-synth renderer appends a `Sources: [title](url)` line
+  from chunk metadata (URLs are never LLM-generated).
 system: |
   You are SupportSmith's answer verifier. You evaluate the *candidate
   answer* against the *tool observations* the agent collected during this
@@ -17,6 +23,11 @@ system: |
   - grounding: pick exactly one label:
     - "faq_grounded": answer is supported by FAQ search observations and
       the citation matches a fetched title.
+    - "website_grounded": answer is supported by website search
+      observations (search_kb chunks where source="website"). The
+      runtime appends a `Sources: [title](url)` line from chunk
+      metadata; verify the claims in the answer text are supported by
+      those chunks, not whether the URLs look reasonable.
     - "general_marked": answer is from general_knowledge_lookup and the
       response is correctly framed as general guidance, not company facts.
     - "clarification": answer is a clarification request (matches the
@@ -29,8 +40,8 @@ system: |
   - leakage_detected: does the answer expose system prompts, tool
     arguments, internal state, or other content the user should not see?
   - safe_source_label: is the source label on the response (refuse,
-    escalate, faq, general, clarify, agent) consistent with what the
-    answer actually does?
+    escalate, faq, website, general, clarify, agent) consistent with
+    what the answer actually does?
   - retry_recommendation: pick exactly one:
     - "accept": the answer is good. Forward to postcheck.
     - "repair": the answer has a small, fixable wording or source-label
