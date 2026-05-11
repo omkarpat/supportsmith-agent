@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     compliance_max_completion_tokens: int = 512
     judge_max_completion_tokens: int = 1024
 
+    api_bearer_token: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("SUPPORTSMITH_API_BEARER_TOKEN"),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

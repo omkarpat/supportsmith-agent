@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>SupportSmith demo console</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/ui/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app" data-state="idle">
+      <aside class="sidebar">
+        <header class="sidebar__header">
+          <h1>SupportSmith</h1>
+          <p class="sidebar__subtitle">demo console</p>
+        </header>
+
+        <button type="button" id="new-chat" class="btn btn--primary">
+          <span aria-hidden="true">＋</span> New chat
+        </button>
+
+        <section class="sidebar__list" aria-label="Recent conversations">
+          <div id="sidebar-status" class="sidebar__status" hidden></div>
+          <ul id="conversation-list" class="conv-list"></ul>
+        </section>
+
+        <section class="sidebar__token" aria-label="API token">
+          <label class="token__label" for="token-input">Bearer token</label>
+          <input
+            type="password"
+            id="token-input"
+            class="token__input"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="paste demo token"
+          />
+          <div class="token__row">
+            <label class="token__remember">
+              <input type="checkbox" id="token-remember" />
+              <span>remember on this device</span>
+            </label>
+            <button type="button" id="token-clear" class="btn btn--ghost">
+              clear
+            </button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="main__header">
+          <div>
+            <h2 id="active-title">New conversation</h2>
+            <p id="active-subtitle" class="main__subtitle">
+              Start typing below — a fresh conversation is minted on the first message.
+            </p>
+          </div>
+        </header>
+
+        <section class="main__messages" aria-live="polite">
+          <ol id="message-list" class="messages"></ol>
+          <div id="empty-state" class="empty-state">
+            <p>No messages yet.</p>
+            <p class="empty-state__hint">
+              Try: <em>"How do I reset my password?"</em>
+            </p>
+          </div>
+          <div id="banner" class="banner" hidden role="status"></div>
+        </section>
+
+        <form id="composer" class="composer" autocomplete="off">
+          <textarea
+            id="composer-input"
+            class="composer__input"
+            rows="2"
+            placeholder="Ask SupportSmith…  (Enter to send, Shift+Enter for newline)"
+            required
+          ></textarea>
+          <button type="submit" id="composer-send" class="btn btn--primary">
+            Send
+          </button>
+        </form>
+      </main>
+    </div>
+
+    <script type="module" src="/ui/assets/app.js"></script>
+  </body>
+</html>

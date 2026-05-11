@@ -1,4 +1,4 @@
-"""Conversation endpoints (Phase 5).
+"""Conversation endpoints (Phase 5, extended in Phase 8).
 
 Write surface (the *only* place that mutates conversation state):
 
@@ -7,6 +7,7 @@ Write surface (the *only* place that mutates conversation state):
 
 Read surface:
 
+  - ``GET /conversations``                          — sidebar list (Phase 8)
   - ``GET /conversations/{id}/messages``
   - ``GET /conversations/{id}/turns/{turn_number}/messages``
   - ``GET /conversations/{id}/trace``               — LangSmith read-through
@@ -18,7 +19,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,9 +36,13 @@ from app.core.config import Settings
 from app.persistence import (
     ConversationNotFoundError,
     ConversationRepository,
+    ConversationSummary,
     MessageRecord,
     MessageRepository,
 )
+
+CONVERSATIONS_LIST_DEFAULT_LIMIT = 50
+CONVERSATIONS_LIST_MAX_LIMIT = 100
 
 router = APIRouter(tags=["conversations"])
 
@@ -58,6 +63,14 @@ class MessagesResponse(BaseModel):
 
     conversation_id: str
     messages: list[MessageRecord]
+
+
+class ConversationsResponse(BaseModel):
+    """Sidebar payload: recent conversations with last-message previews."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversations: list[ConversationSummary]
 
 
 class TraceResponse(BaseModel):
@@ -169,6 +182,23 @@ async def _require_conversation(session: AsyncSession, conversation_id: str) -> 
         await ConversationRepository(session).require(conversation_id)
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Conversation not found") from exc
+
+
+@router.get("/conversations", response_model=ConversationsResponse)
+async def list_conversations(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=CONVERSATIONS_LIST_MAX_LIMIT,
+            description="Maximum conversations to return (1-100).",
+        ),
+    ] = CONVERSATIONS_LIST_DEFAULT_LIMIT,
+) -> ConversationsResponse:
+    """Phase 8 sidebar feed: most recently updated conversations first."""
+    summaries = await ConversationRepository(session).list_recent(limit=limit)
+    return ConversationsResponse(conversations=summaries)
 
 
 @router.get(

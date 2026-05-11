@@ -22,6 +22,12 @@ from app.retrieval.models import RetrievalResult
 
 
 class FakeDatabase:
+    # ``None`` so dependencies that ``raise HTTPException(503, ...)`` on a
+    # missing factory surface a clean 503 in tests instead of an
+    # AttributeError. Tests that need real persistence point at a Postgres
+    # URL and bypass this stub.
+    session_factory = None
+
     async def connect(self) -> None:
         return None
 
