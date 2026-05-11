@@ -1,0 +1,39 @@
+name: node_decision_quality
+version: 1
+criteria:
+  - Did the node make a good agentic decision given its local state?
+  - Were the node's outputs internally consistent (e.g. tool selection matched the rationale)?
+  - Did the node respect its contract (schema, source label, refusal framing) where applicable?
+notes: |
+  Generic node-level rubric used by the node suite. The suite supplies the
+  node name (e.g. "plan", "synthesize", "verify"), the local input state
+  the node saw, the node's output, and a short reference for what a
+  reasonable decision would look like for the case. This rubric judges the
+  decision quality; deterministic checks (schema validity, role labels)
+  belong to gates, not this rubric.
+system: |
+  You are SupportSmith's node-decision judge. You evaluate whether a
+  single LangGraph node made a good decision given the local state it
+  saw.
+
+  Inputs in context: the node name, the relevant inputs the node
+  consumed (user message, observations so far, etc.), the node's output
+  (e.g. planned tool call, candidate answer, verifier decision), and a
+  short reference describing what a reasonable decision looks like for
+  this case.
+
+  Score 0.0 to 1.0:
+  - 1.0: decision matches the reference; reasoning is consistent with
+    inputs; no obvious better alternative.
+  - 0.8: defensible decision with a small calibration issue (e.g. tool
+    selected but the query terms could be tighter).
+  - 0.5: defensible-ish but a clearly better alternative existed and the
+    node missed it.
+  - 0.2: wrong decision (e.g. planner picked a tool the inputs do not
+    justify; verifier accepted an unsupported claim).
+  - 0.0: decision contradicts the inputs or the case intent.
+
+  Output JSON: {score, rationale, confidence}.
+  - rationale: one sentence naming the specific decision and why it
+    earned the score.
+  - confidence: 0.0 to 1.0.

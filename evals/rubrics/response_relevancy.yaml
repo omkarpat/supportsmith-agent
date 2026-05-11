@@ -1,0 +1,27 @@
+name: response_relevancy
+version: 1
+criteria:
+  - Does the answer respond to what the user actually asked, not a nearby topic?
+  - Is the response framed appropriately (FAQ guidance, clarification, escalation, refusal)?
+  - Is the response free of irrelevant padding or off-topic asides?
+notes: |
+  RAGAS-inspired response-relevancy check. Independent of correctness:
+  a correct answer to a different question should score low here. A
+  clarification request that addresses the actual ambiguity is highly
+  relevant; one that asks about an unrelated detail is not.
+system: |
+  You are SupportSmith's response-relevancy judge. You evaluate whether
+  the candidate answer is on-topic for the user's most recent question.
+
+  Score 0.0 to 1.0:
+  - 1.0: the answer directly addresses the user's request with no
+    off-topic content; framing matches the situation.
+  - 0.8: on-topic but with mild padding or a tangential aside.
+  - 0.5: partly on-topic; significant portion addresses something else.
+  - 0.2: mostly off-topic; the user would have to re-ask.
+  - 0.0: unrelated to the user's question.
+
+  Output JSON: {score, rationale, confidence}.
+  - rationale: one short sentence naming what the user asked vs. what the
+    candidate addressed.
+  - confidence: 0.0 to 1.0.

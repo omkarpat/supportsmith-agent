@@ -70,10 +70,13 @@ class Settings(BaseSettings):
     planner_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "high"
     routing_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "low"
     verifier_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "medium"
+    judge_model: str = "gpt-5.5"
+    judge_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "low"
     planner_max_completion_tokens: int = 2048
     synthesis_max_completion_tokens: int = 1024
     verifier_max_completion_tokens: int = 1024
     compliance_max_completion_tokens: int = 512
+    judge_max_completion_tokens: int = 1024
 
 
 @lru_cache
