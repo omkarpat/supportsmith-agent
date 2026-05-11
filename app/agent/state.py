@@ -98,20 +98,44 @@ class TraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class CitedChunk(BaseModel):
+    """One retrieval chunk the synthesizer referenced by id.
+
+    Persisted on :class:`CandidateAnswer` so renderers, the verifier, and the
+    response builder can attach citation metadata deterministically without
+    re-parsing observations or trusting the LLM with raw URLs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_id: int = Field(ge=0)
+    external_id: str
+    source: Literal["faq", "website"]
+    title: str
+    content: str
+    source_url: str | None = None
+
+
 class CandidateAnswer(BaseModel):
     """Tentative final answer produced by the synthesize node.
 
     ``compliance`` is a distinct source from ``refuse``: planner-driven refuses
     use ``refuse`` (cheap in-loop gatekeeper); compliance precheck/postcheck
     refusals use ``compliance`` so reviewers can distinguish the two paths.
+
+    ``cited_chunks`` carries the deterministically-resolved retrieval chunks
+    the synthesizer referenced by id; ``citations`` is the FAQ-title subset
+    surfaced as ``matched_questions`` in the API response.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     text: str
     citations: list[str] = Field(default_factory=list)
+    cited_chunks: list[CitedChunk] = Field(default_factory=list)
     source: Literal[
         "faq",
+        "website",
         "general",
         "clarify",
         "escalate",

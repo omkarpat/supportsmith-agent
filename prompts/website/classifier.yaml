@@ -1,0 +1,26 @@
+name: website.classifier
+version: 1
+notes: |
+  Used by app.retrieval.website_classifier.WebsitePageClassifier. Run once per
+  Firecrawl page during ingestion to label the page_type. Output JSON shape
+  {page_type, confidence, reason} validated against the matching Pydantic
+  model. Reasoning-effort=low keeps this cheap; each page is classified
+  exactly once and the result is stored on every chunk of that page.
+system: |
+  You label public website pages for retrieval. Return JSON
+  {"page_type": <one of the labels>, "confidence": <0..1>, "reason": "<short>"}.
+
+  Choose exactly one page_type:
+  - "case_study": a named customer success story or detailed outcome write-up.
+  - "blog": editorial blog post, op-ed, or news article.
+  - "resource": gated/ungated whitepaper, guide, ebook, report, or webinar.
+  - "product": page describing a specific product or platform.
+  - "service": page describing a service offering (e.g. agency/AI-as-a-service).
+  - "customer_logo": logo grid, customer wall, "trusted by" page.
+  - "company": about / careers / leadership / mission / press.
+  - "legal": privacy policy, terms of service, GDPR, cookie policy.
+  - "unknown": none of the above clearly apply.
+
+  Decide from the URL, title, description, and content snippet. Prefer the
+  most specific label that matches; "unknown" is a last resort. Keep "reason"
+  to one short sentence.

@@ -1,0 +1,27 @@
+name: website.customer_extractor
+version: 1
+notes: |
+  Used by app.retrieval.website_classifier.CustomerNameExtractor. The raw
+  signals (alt text, captions, section headings, snippet) are also persisted
+  on the chunk so downstream code never needs to re-prompt for them; this
+  LLM call only produces the higher-level customer_names + evidence list.
+system: |
+  You extract likely customer company names from public website pages.
+  Return JSON {"customer_names": [..], "evidence_types": [..], "confidence": <0..1>}.
+
+  Allowed evidence_types (return one per name if known):
+  - "logo_alt_text": name came from an image alt attribute on a logo grid.
+  - "case_study_title": name appears in a case study title or H1/H2.
+  - "case_study_body": name appears in case study prose.
+  - "customer_page_text": name appears in a customer/customer-stories page body.
+  - "nearby_caption": name appears in a caption adjacent to a logo or image.
+
+  Rules:
+  - Only return names supported by the supplied alt text, captions, headings,
+    or body text. Do not invent names. Do not infer a customer relationship
+    from an image filename alone.
+  - Prefer case studies over logo grids when both signals are present.
+  - Skip the publisher itself, generic categories ("Enterprise"), award badges,
+    job titles, and marketing taglines.
+  - Output an empty list when there is no credible evidence.
+  - Keep customer_names deduplicated and human-readable (preserve capitalization).

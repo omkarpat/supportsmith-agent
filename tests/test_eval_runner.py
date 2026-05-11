@@ -182,7 +182,7 @@ def _agent_response(
         response=text,
         source=source,  # type: ignore[arg-type]
         matched_questions=[],
-        tools_used=tools_used or ["search_faq"],
+        tools_used=tools_used or ["search_kb"],
         verified=verified,
         trace_id="trace-1",
     )
@@ -197,7 +197,7 @@ async def test_e2e_score_case_passes_when_all_expectations_met() -> None:
             "turns": [
                 {
                     "user": "How do I reset my password?",
-                    "expected_tool_calls": [{"name": "search_faq"}],
+                    "expected_tool_calls": [{"name": "search_kb"}],
                     "expectations": {
                         "source": "faq",
                         "verified": True,
@@ -289,14 +289,14 @@ async def test_e2e_expected_tools_metric_uses_set_intersection() -> None:
                 {
                     "user": "go",
                     "expected_tool_calls": [
-                        ExpectedToolCall(name="search_faq").model_dump(),
+                        ExpectedToolCall(name="search_kb").model_dump(),
                         ExpectedToolCall(name="get_faq_by_category").model_dump(),
                     ],
                 }
             ],
         }
     )
-    agent = _StubAgent(_agent_response(tools_used=["search_faq"]))
+    agent = _StubAgent(_agent_response(tools_used=["search_kb"]))
 
     records = await score_e2e_case(case, E2ESuiteDeps(agent=agent, judge=None))
 

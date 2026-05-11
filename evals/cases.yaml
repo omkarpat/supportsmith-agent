@@ -24,7 +24,7 @@ e2e_cases:
         reference_docs:
           - take_home_faq:what-steps-do-i-take-to-reset-my-password-81efd517-001
         expected_tool_calls:
-          - name: search_faq
+          - name: search_kb
         rubrics: [correctness, faithfulness, response_relevancy, tool_efficiency]
         expectations:
           source: faq
@@ -44,7 +44,7 @@ e2e_cases:
         reference_docs:
           - take_home_faq:can-i-get-a-refund-a9df4012-019
         expected_tool_calls:
-          - name: search_faq
+          - name: search_kb
         rubrics: [correctness, faithfulness, tool_efficiency]
         expectations:
           source: faq
@@ -112,7 +112,7 @@ e2e_cases:
         reference_docs:
           - take_home_faq:what-steps-do-i-take-to-reset-my-password-81efd517-001
         expected_tool_calls:
-          - name: search_faq
+          - name: search_kb
         rubrics: [correctness, faithfulness, response_relevancy]
         expectations:
           source: faq
@@ -253,7 +253,7 @@ e2e_cases:
         reference_docs:
           - take_home_faq:how-do-i-add-a-payment-method-b7f7fd2e-017
         expected_tool_calls:
-          - name: search_faq
+          - name: search_kb
         rubrics: [correctness, faithfulness]
         expectations:
           source: faq
@@ -266,7 +266,7 @@ e2e_cases:
         reference_docs:
           - take_home_faq:where-can-i-download-invoices-1b9f85e2-018
         expected_tool_calls:
-          - name: search_faq
+          - name: search_kb
         rubrics: [correctness, faithfulness, response_relevancy]
         expectations:
           source: faq

@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,6 +77,57 @@ class Settings(BaseSettings):
     verifier_max_completion_tokens: int = 1024
     compliance_max_completion_tokens: int = 512
     judge_max_completion_tokens: int = 1024
+
+    firecrawl_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices(
+            "SUPPORTSMITH_FIRECRAWL_API_KEY",
+            "FIRECRAWL_API_KEY",
+        ),
+    )
+    api_bearer_token: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("SUPPORTSMITH_API_BEARER_TOKEN",),
+    )
+    admin_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("SUPPORTSMITH_ADMIN_API_KEY",),
+    )
+    allowed_ingestion_hosts: tuple[str, ...] = Field(
+        default=(),
+        validation_alias=AliasChoices("SUPPORTSMITH_ALLOWED_INGESTION_HOSTS",),
+    )
+    allow_any_website_ingestion: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SUPPORTSMITH_ALLOW_ANY_WEBSITE_INGESTION",),
+    )
+    website_classifier_model: str = "gpt-5.5"
+    website_classifier_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh"
+    ] = "low"
+    website_classifier_max_completion_tokens: int = 256
+    website_extractor_model: str = "gpt-5.5"
+    website_extractor_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh"
+    ] = "low"
+    website_extractor_max_completion_tokens: int = 512
+    website_max_pages_per_job: int = 500
+    website_max_chunks_per_page: int = 40
+    website_max_total_chunks_per_job: int = 5000
+
+    @field_validator("allowed_ingestion_hosts", mode="before")
+    @classmethod
+    def _split_hosts(cls, value: object) -> object:
+        if value is None or value == "":
+            return ()
+        if isinstance(value, str):
+            return tuple(part.strip().lower() for part in value.split(",") if part.strip())
+        if isinstance(value, (list, tuple)):
+            return tuple(str(item).strip().lower() for item in value if str(item).strip())
+        return value
 
 
 @lru_cache

@@ -46,11 +46,21 @@ class FakeSupportSearch:
         limit: int = 5,
         category: str | None = None,
         min_score: float | None = None,
+        sources: list[str] | None = None,
+        qualities: list[str] | None = None,
     ) -> list[RetrievalResult]:
-        self.last_kwargs = {"limit": limit, "category": category, "min_score": min_score}
-        if category is None:
-            return self.canned[:limit]
-        return [hit for hit in self.canned if hit.category == category][:limit]
+        self.last_kwargs = {
+            "limit": limit,
+            "category": category,
+            "min_score": min_score,
+            "sources": list(sources) if sources is not None else None,
+        }
+        results = self.canned
+        if category is not None:
+            results = [hit for hit in results if hit.category == category]
+        if sources is not None:
+            results = [hit for hit in results if hit.source in sources]
+        return results[:limit]
 
     async def list_categories(self) -> list[str]:
         return sorted({hit.category for hit in self.canned if hit.category})
@@ -211,17 +221,38 @@ def build_support_agent_harness(
 
 
 def faq_result(**overrides: Any) -> RetrievalResult:
-    """Convenience builder for canned RetrievalResult rows in tests."""
+    """Convenience builder for canned FAQ-source RetrievalResult rows in tests."""
     base: dict[str, Any] = {
         "external_id": "take_home_faq:reset-password-001",
-        "source": "take_home_faq",
+        "source": "faq",
         "title": "What steps do I take to reset my password?",
         "content": "Q: ...\n\nA: ...",
         "source_url": None,
         "category": "security",
-        "metadata": {},
+        "metadata": {"dataset": "take_home_faq"},
         "score": 0.9,
         "distance": 0.1,
+    }
+    base.update(overrides)
+    return RetrievalResult.model_validate(base)
+
+
+def website_result(**overrides: Any) -> RetrievalResult:
+    """Convenience builder for canned website-source RetrievalResult rows."""
+    base: dict[str, Any] = {
+        "external_id": "website:knotch:abc123:000",
+        "source": "website",
+        "title": "Acme case study",
+        "content": "Acme increased engagement by 40% after rolling out Knotch.",
+        "source_url": "https://knotch.com/case-studies/acme",
+        "category": "case_study",
+        "metadata": {
+            "site_name": "knotch",
+            "page_type": "case_study",
+            "customer_names": ["Acme"],
+        },
+        "score": 0.85,
+        "distance": 0.15,
     }
     base.update(overrides)
     return RetrievalResult.model_validate(base)
@@ -236,6 +267,7 @@ __all__ = [
     "compliance_decision_json",
     "faq_result",
     "verifier_verdict_json",
+    "website_result",
 ]
 
 

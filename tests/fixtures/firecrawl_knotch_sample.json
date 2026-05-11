@@ -1,0 +1,40 @@
+{
+  "map": {
+    "site_url": "https://knotch.com/",
+    "urls": [
+      "https://knotch.com/",
+      "https://knotch.com/customers",
+      "https://knotch.com/case-studies/acme",
+      "https://knotch.com/blog/content-intelligence"
+    ]
+  },
+  "crawl": {
+    "job_id": "firecrawl_fixture_001",
+    "site_url": "https://knotch.com/",
+    "completed": true,
+    "pages": [
+      {
+        "url": "https://knotch.com/case-studies/acme",
+        "title": "Acme case study | Knotch",
+        "description": "How Acme drove engagement with Knotch.",
+        "markdown": "# Acme case study\n\nAcme is a Fortune 500 customer who used Knotch's content intelligence platform to increase engagement by 40% over six months. The team used Knotch One to instrument every piece of content and route insights into their editorial workflow.\n\n## Results\n\nWithin the first quarter, Acme saw a 25% lift in time-on-page and a 12% lift in conversion across owned channels. Their content team reorganized around the new measurement framework and reported that planning cycles dropped from monthly to weekly.\n\n![Acme team using Knotch One](https://cdn.knotch.com/acme-team.png)\n\n*Acme's content team reviewing Knotch One dashboards.*\n\nAcme continues to expand its Knotch usage across more business units in 2025.\n",
+        "metadata": {
+          "sourceURL": "https://knotch.com/case-studies/acme",
+          "title": "Acme case study | Knotch",
+          "description": "How Acme drove engagement with Knotch."
+        }
+      },
+      {
+        "url": "https://knotch.com/blog/content-intelligence",
+        "title": "What is content intelligence?",
+        "description": "A primer on content intelligence.",
+        "markdown": "# What is content intelligence?\n\nContent intelligence is the practice of measuring how content performs across the buyer journey. It pulls signal from owned channels, paid distribution, and earned media so editorial teams can plan with data instead of guesswork. Knotch's content intelligence platform centralizes those signals.\n\n## Why it matters\n\nWithout measurement, content teams ship into the dark. Knotch's approach connects every content asset to a downstream business outcome — pipeline, retention, brand lift — so marketers can prove ROI.\n\nFor more on how customers like Acme use this, see the case study collection.\n",
+        "metadata": {
+          "sourceURL": "https://knotch.com/blog/content-intelligence",
+          "title": "What is content intelligence?",
+          "description": "A primer on content intelligence."
+        }
+      }
+    ]
+  }
+}

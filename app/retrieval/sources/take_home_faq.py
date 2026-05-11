@@ -14,7 +14,8 @@ from app.retrieval.chunker import FAQChunker
 from app.retrieval.models import RejectedItem, SeedDocument
 
 KnowledgeBaseQuality = Literal["trusted", "low_quality", "ambiguous"]
-SOURCE: Literal["take_home_faq"] = "take_home_faq"
+SOURCE: Literal["faq"] = "faq"
+DATASET: Literal["take_home_faq"] = "take_home_faq"
 
 _NON_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -89,7 +90,7 @@ def load_take_home_faq(path: Path) -> LoadedKnowledgeBase:
                 content=chunk.content,
                 embedding_text=chunk.embedding_text,
                 category=item.category,
-                metadata={"ordinal": index},
+                metadata={"ordinal": index, "dataset": DATASET},
             )
         )
 
@@ -107,4 +108,4 @@ def _build_external_id(question: str, *, ordinal: int) -> str:
     if not slug:
         slug = "row"
     digest = hashlib.sha1(question.encode("utf-8")).hexdigest()[:8]
-    return f"{SOURCE}:{slug[:48]}-{digest}-{ordinal:03d}"
+    return f"{DATASET}:{slug[:48]}-{digest}-{ordinal:03d}"

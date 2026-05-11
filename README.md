@@ -2,7 +2,7 @@
 
 A traceable multi-tool customer support agent with compliance guardrails, self-verification, and multi-turn memory.
 
-SupportSmith is being built in multiple phases. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wired the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools, a 6-iteration cap, and per-turn structured traces. Phase 4 added compliance and verification: a separate Compliance Agent runs precheck (before the graph) and postcheck (after synthesis), an inlined verifier checks grounding and recommends accept / repair / escalate / refuse with a single-repair budget, and every refusal path emits one canonical string. Phase 5 makes conversations durable and inspectable: Postgres stores conversations + visible `user`/`agent`/`compliance` messages with `turn_number`, the chat flow loads the last N user turns as context for the planner, retry+fallback wraps the agent for transient OpenAI failures, and tracing moves to LangSmith — every turn becomes a root run with `metadata.thread_id == conversation_id` and the assigned run UUID is captured back onto the agent message row, so trace endpoints can do an O(1) `read_run` per turn or filter the thread's runs by metadata.
+SupportSmith is being built in multiple phases. Phase 1 shipped the environment, FastAPI skeleton, LLM/eval/agent harness interfaces, Docker support, and required Postgres/pgvector infrastructure so the project can be run locally or hosted on a Railway-style platform early. Phase 2 added the retrieval layer: typed knowledge-base ingestion, idempotent pgvector seeding with hash-based change detection, and HNSW cosine-similarity search over `support_documents`. Phase 3 wired the LangGraph agent: a structured plan → execute → observe → synthesize → verify → finalize loop driven by the OpenAI Chat Completions API, with six typed tools, a 6-iteration cap, and per-turn structured traces. Phase 4 added compliance and verification: a separate Compliance Agent runs precheck (before the graph) and postcheck (after synthesis), an inlined verifier checks grounding and recommends accept / repair / escalate / refuse with a single-repair budget, and every refusal path emits one canonical string. Phase 5 makes conversations durable and inspectable: Postgres stores conversations + visible `user`/`agent`/`compliance` messages with `turn_number`, the chat flow loads the last N user turns as context for the planner, retry+fallback wraps the agent for transient OpenAI failures, and tracing moves to LangSmith — every turn becomes a root run with `metadata.thread_id == conversation_id` and the assigned run UUID is captured back onto the agent message row, so trace endpoints can do an O(1) `read_run` per turn or filter the thread's runs by metadata. Phase 7 generalizes the retrieval source: the `SeedSource` literal becomes `faq | website`, the existing FAQ rows seed as `source="faq"` (with `metadata.dataset="take_home_faq"`), and a generic Firecrawl-backed ingestion pipeline loads any public website (Knotch is one configured source under `data/websites/knotch.yaml`) into the same `support_documents` table. Page classification, customer-name extraction, and chunk-id–based citations all run via the existing `LLMClient` Protocol so the pipeline stays mockable. An admin ingestion API (`/admin/website-ingestions`) drives jobs as FastAPI background tasks behind a bearer-token + admin-API-key gate for the Railway demo deployment.
 
 ## What To Review First
 
@@ -515,6 +515,149 @@ LLM-driven cases do show run-to-run drift at the agent layer (`billing-refund-ha
 - `evals/cases.yaml` — 13 e2e cases (covering `happy_path`, `ambiguous`, `off_topic`, `malicious`, `multi_turn`) plus 6 retrieval cases keyed on FAQ external ids.
 - `evals/rubrics/*.yaml` — seven LLM-as-judge rubrics (`correctness`, `faithfulness`, `response_relevancy`, `tool_efficiency`, `trajectory_quality`, `guardrail_success`, `node_decision_quality`). Each rubric returns `{score, rationale, confidence}` so the runner can attach it as a typed `Metric`.
 
+## Website ingestion (Phase 7)
+
+Phase 7 adds a Firecrawl-backed pipeline that loads public-website chunks into
+the same `support_documents` table as the take-home FAQ. The retrieval source
+literal is now `Literal["faq", "website"]`; the FAQ loader emits
+`source="faq"` with `metadata.dataset="take_home_faq"` and Phase 7 ingestion
+emits `source="website"` with `metadata.site_name=<site>`.
+
+> The Phase 7 source taxonomy is incompatible with rows seeded under the
+> pre–Phase 7 `source="take_home_faq"` literal. Nothing is deployed yet, so
+> the migration path is a clean re-seed: `docker compose down -v` (drops the
+> Postgres volume) and then `docker compose up --build`, or run
+> `supportsmith-seed` directly against an empty DB. There is no data
+> migration to preserve the old rows.
+
+### Configure Firecrawl
+
+```bash
+# in .env
+SUPPORTSMITH_FIRECRAWL_API_KEY=fc_pt_...
+SUPPORTSMITH_API_BEARER_TOKEN=<random-token>      # demo-wide bearer gate
+SUPPORTSMITH_ADMIN_API_KEY=<random-admin-key>     # extra gate on /admin/*
+SUPPORTSMITH_ALLOWED_INGESTION_HOSTS=knotch.com   # comma-separated allowlist
+SUPPORTSMITH_ALLOW_ANY_WEBSITE_INGESTION=false    # opt out of allowlist
+```
+
+### Site config
+
+Per-site configuration lives in `data/websites/<name>.yaml`. The Knotch
+default `data/websites/knotch.yaml` declares `base_url`, `include_paths`,
+`priority_paths` (case studies, blog, content, services/agentc, etc.),
+`exclude_paths` (admin, CDN, uploads), and crawl tunables.
+
+### CLI
+
+```bash
+# Map only — list discovered URLs without crawling or DB writes.
+uv run --env-file .env supportsmith-ingest-website knotch --map-only
+
+# Dry run — crawl, classify, chunk, but do not embed or write.
+uv run --env-file .env supportsmith-ingest-website knotch --dry-run
+
+# Live ingest — embeds + upserts trusted website chunks idempotently.
+uv run --env-file .env supportsmith-ingest-website knotch --limit 500
+
+# Arbitrary URL (allowlist still applies to the admin API but not to the CLI).
+uv run --env-file .env supportsmith-ingest-website acme --url https://acme.com/
+```
+
+The CLI prints a JSON `WebsiteIngestionSummary`: discovered, crawled,
+inserted/updated/unchanged/embedded counts, stale rows marked, and one
+record per page with `page_type`, `priority`, and any extracted
+`customer_names`.
+
+### Admin ingestion API
+
+The same orchestrator drives a process-local admin API behind both
+`SUPPORTSMITH_API_BEARER_TOKEN` and `SUPPORTSMITH_ADMIN_API_KEY`:
+
+```bash
+# Queue a job. Returns 202 + job_id while Firecrawl runs in the background.
+curl -X POST https://supportsmith-demo.up.railway.app/admin/website-ingestions \
+  -H "Authorization: Bearer $SUPPORTSMITH_API_BEARER_TOKEN" \
+  -H "X-Admin-Api-Key: $SUPPORTSMITH_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://knotch.com/","name":"knotch","limit":50,"dry_run":true}'
+
+# Inspect a single job.
+curl https://supportsmith-demo.up.railway.app/admin/website-ingestions/<job_id> \
+  -H "Authorization: Bearer $SUPPORTSMITH_API_BEARER_TOKEN" \
+  -H "X-Admin-Api-Key: $SUPPORTSMITH_ADMIN_API_KEY"
+
+# List jobs (process-local; lost on restart).
+curl https://supportsmith-demo.up.railway.app/admin/website-ingestions \
+  -H "Authorization: Bearer $SUPPORTSMITH_API_BEARER_TOKEN" \
+  -H "X-Admin-Api-Key: $SUPPORTSMITH_ADMIN_API_KEY"
+
+# Best-effort cancel.
+curl -X POST .../admin/website-ingestions/<job_id>/cancel \
+  -H "Authorization: Bearer $SUPPORTSMITH_API_BEARER_TOKEN" \
+  -H "X-Admin-Api-Key: $SUPPORTSMITH_ADMIN_API_KEY"
+```
+
+`/health` is intentionally left unauthenticated for Railway's health probe
+and never accepts the bearer token in logs.
+
+### Safety guardrails
+
+- Bearer token comparison uses `hmac.compare_digest`; tokens are never logged.
+- The admin API validates each submitted URL with `validate_public_url`:
+  scheme must be http/https; loopback, link-local, RFC1918, and reserved
+  addresses are rejected; non-allowlisted hosts are rejected unless
+  `SUPPORTSMITH_ALLOW_ANY_WEBSITE_INGESTION=true`.
+- The crawler enforces server-side caps: `website_max_pages_per_job` and
+  `website_max_total_chunks_per_job` (configurable via env), and Firecrawl
+  defaults to `onlyMainContent=true` and `allowExternalLinks=false`.
+- Duplicate concurrent crawls for the same `base_url` are rejected at the
+  in-memory job registry (409 Conflict).
+
+### Citation refactor
+
+The synthesizer no longer cites by title. The synth prompt receives the
+retrieval results as a numbered chunk list and emits
+`{text, cited_chunk_ids: list[int]}`; the post-synthesis renderer in
+`app/agent/nodes.py:synthesize` looks each id up and attaches FAQ titles to
+`matched_questions` or appends a `Sources: [title](url)` line for website
+chunks. The LLM never sees the URL output path, which prevents URL
+hallucination.
+
+### Agent surface change: `search_faq` → `search_kb`
+
+The retrieval tool is renamed to reflect that the knowledge base now spans
+both FAQ and website rows. `search_kb` accepts an optional `sources` filter
+(`["faq"]`, `["website"]`, or omitted to search both). The planner prompt's
+allowed-tools list and routing guidance are updated for this.
+
+## Railway deployment
+
+The branch is wired for Railway:
+
+- `Dockerfile` installs dependencies, copies `app`, `scripts`, `alembic`,
+  `data`, and `prompts`, and starts uvicorn on `${PORT:-8000}`.
+- `railway.json` declares the Dockerfile builder, sets the start command to
+  run `supportsmith-migrate` before uvicorn, and points the health check at
+  `/health`.
+- The Postgres add-on must enable the `pgvector` extension (the initial
+  migration creates it via `CREATE EXTENSION IF NOT EXISTS vector`).
+
+Deploy steps (Omkar runs these manually — no auto-deploy in this branch):
+
+1. `railway login` and `railway link` to the project.
+2. Provision a Postgres plugin; ensure pgvector is available.
+3. Set environment variables on the Railway service:
+   `OPENAI_API_KEY`, `SUPPORTSMITH_FIRECRAWL_API_KEY`,
+   `SUPPORTSMITH_API_BEARER_TOKEN`, `SUPPORTSMITH_ADMIN_API_KEY`,
+   `SUPPORTSMITH_ALLOWED_INGESTION_HOSTS=knotch.com`, `LANGSMITH_TRACING=true`,
+   `LANGSMITH_API_KEY`, `DATABASE_URL` (Railway injects this).
+4. `railway up` to deploy. Migrations run on container start; the FAQ seed
+   is operator-initiated (`railway run supportsmith-seed`) so the deploy
+   image stays slim.
+5. Trigger the first website ingest via
+   `POST /admin/website-ingestions` from a controlled IP.
+
 ## Take-home scorecard
 
 | Requirement signal | Where to look |
@@ -523,6 +666,8 @@ LLM-driven cases do show run-to-run drift at the agent layer (`billing-refund-ha
 | LangGraph agent workflow | `app.agent.graph`, `app.agent.nodes` |
 | Tool calling (6 typed tools) | `app.agent.tools` + planner JSON schema |
 | RAG over pgvector | `app.retrieval.*`, `scripts/db_seed.py` |
+| Website ingestion | `app.ingestion.website`, `scripts/ingest_website.py`, `app.retrieval.firecrawl` |
+| Admin ingestion API + auth | `app.api.routes.website_ingestions`, `app.api.security` |
 | Compliance guardrails | `app.agent.compliance`, `prompts/compliance/*` |
 | Self-verification | `app.agent.verifier`, `verify` node in `app.agent.nodes` |
 | Multi-turn memory | `app.persistence.{conversations,messages}`, `/conversations/{id}/messages` |

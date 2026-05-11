@@ -16,7 +16,7 @@ def test_normalize_is_unicode_stable() -> None:
 def _seed(**overrides: object) -> SeedDocument:
     base: dict[str, object] = {
         "external_id": "take_home_faq:reset-password-001",
-        "source": "take_home_faq",
+        "source": "faq",
         "title": "Reset password",
         "content": "Q: Reset password\n\nA: Use settings.",
         "embedding_text": "reset password use settings",

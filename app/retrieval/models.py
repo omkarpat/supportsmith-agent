@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SeedSource = Literal["take_home_faq"]
+SeedSource = Literal["faq", "website"]
 
 
 class SeedDocument(BaseModel):

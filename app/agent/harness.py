@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 AgentSource = Literal[
     "agent",
     "faq",
+    "website",
     "general",
     "clarify",
     "escalate",

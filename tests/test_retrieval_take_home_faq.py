@@ -31,8 +31,9 @@ def test_loader_assigns_stable_external_ids_and_metadata() -> None:
     assert [doc.external_id for doc in first.documents] == [
         doc.external_id for doc in second.documents
     ]
-    assert all(doc.source == "take_home_faq" for doc in first.documents)
+    assert all(doc.source == "faq" for doc in first.documents)
     assert all(doc.external_id.startswith("take_home_faq:") for doc in first.documents)
+    assert all(doc.metadata["dataset"] == "take_home_faq" for doc in first.documents)
     assert {doc.metadata["ordinal"] for doc in first.documents} == {0, 1}
 
 

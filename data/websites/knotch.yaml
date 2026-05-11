@@ -1,0 +1,24 @@
+name: knotch
+base_url: https://knotch.com/
+source: website
+description: Knotch public website
+include_paths:
+  - "^/.*"
+priority_paths:
+  - "^/customers"
+  - "^/case-studies"
+  - "^/content"
+  - "^/blog"
+  - "^/resources"
+  - "^/services/agentc"
+exclude_paths:
+  - "^/wp-admin"
+  - "^/cdn-cgi"
+  - "^/wp-content/uploads"
+crawl:
+  limit: 500
+  max_depth: null
+  allow_subdomains: false
+  allow_external_links: false
+  ignore_query_parameters: true
+  only_main_content: true
