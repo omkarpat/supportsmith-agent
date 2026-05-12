@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.wiring import build_live_support_agent
 from app.api.routes import conversations, health
+from app.api.security import configure_security
 from app.core.config import Settings, get_settings
 from app.db.postgres import PostgresDatabase
 from app.retrieval.search import SupportDocumentSearch
+from app.web import router as web_router
 
 
 @asynccontextmanager
@@ -56,6 +58,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved_settings
 
+    configure_security(app, settings=resolved_settings)
+
     app.include_router(health.router)
     app.include_router(conversations.router)
+    app.include_router(web_router)
     return app
