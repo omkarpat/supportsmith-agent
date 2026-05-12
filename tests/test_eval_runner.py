@@ -10,11 +10,12 @@ command, not by this file.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from app.agent.harness import AgentRequest, AgentResponse
-from app.evals.runner import build_parser, load_cases
+from app.evals.runner import HttpAgent, build_parser, load_cases
 from app.evals.scoring import (
     PASS_THRESHOLD,
     Evidence,
@@ -330,6 +331,63 @@ def test_build_parser_defaults() -> None:
     assert args.target == "agent"
     assert args.model is None
     assert str(args.cases) == "evals/cases.yaml"
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _FakeHttpClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def post(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> _FakeHttpResponse:
+        self.calls.append({"path": path, "json": json, "headers": headers})
+        conversation_id = json.get("conversation_id") or "minted-conversation"
+        return _FakeHttpResponse(
+            {
+                "conversation_id": conversation_id,
+                "turn_number": len(self.calls),
+                "response": "ok",
+                "source": "agent",
+                "matched_questions": [],
+                "tools_used": [],
+                "verified": True,
+                "trace_id": "trace",
+                "cost": {},
+            }
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_http_agent_mints_then_resumes_api_conversation() -> None:
+    agent = HttpAgent("http://example.test", bearer_token="secret")
+    fake_client = _FakeHttpClient()
+    agent._client = fake_client
+
+    first = await agent.respond(AgentRequest(conversation_id="fixture-id", message="one"))
+    second = await agent.respond(AgentRequest(conversation_id="fixture-id", message="two"))
+
+    assert first.conversation_id == "minted-conversation"
+    assert second.conversation_id == "minted-conversation"
+    assert fake_client.calls[0]["json"]["conversation_id"] is None
+    assert fake_client.calls[1]["json"]["conversation_id"] == "minted-conversation"
+    assert fake_client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
 
 
 def test_evidence_default_shape() -> None:
