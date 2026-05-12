@@ -334,8 +334,16 @@ def test_build_parser_defaults() -> None:
 
 
 class _FakeHttpResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        status_code: int = 200,
+        text: str = "",
+    ) -> None:
         self._payload = payload
+        self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self) -> None:
         return None
@@ -345,8 +353,9 @@ class _FakeHttpResponse:
 
 
 class _FakeHttpClient:
-    def __init__(self) -> None:
+    def __init__(self, response: _FakeHttpResponse | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self._canned_response = response
 
     async def post(
         self,
@@ -356,6 +365,8 @@ class _FakeHttpClient:
         headers: dict[str, str] | None = None,
     ) -> _FakeHttpResponse:
         self.calls.append({"path": path, "json": json, "headers": headers})
+        if self._canned_response is not None:
+            return self._canned_response
         conversation_id = json.get("conversation_id") or "minted-conversation"
         return _FakeHttpResponse(
             {
@@ -388,6 +399,25 @@ async def test_http_agent_mints_then_resumes_api_conversation() -> None:
     assert fake_client.calls[0]["json"]["conversation_id"] is None
     assert fake_client.calls[1]["json"]["conversation_id"] == "minted-conversation"
     assert fake_client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+
+
+async def test_http_agent_surfaces_status_and_body_on_4xx() -> None:
+    """A 4xx must raise with the response body in the message so the
+    no_response gate's reason field is actually diagnostic."""
+    agent = HttpAgent("http://example.test")
+    fake_client = _FakeHttpClient(
+        response=_FakeHttpResponse(
+            payload={"detail": "Conversation not found"},
+            status_code=404,
+            text='{"detail":"Conversation not found"}',
+        )
+    )
+    agent._client = fake_client
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await agent.respond(AgentRequest(conversation_id="x", message="y"))
+    assert "404" in str(exc_info.value)
+    assert "Conversation not found" in str(exc_info.value)
 
 
 def test_evidence_default_shape() -> None:

@@ -197,7 +197,16 @@ class HttpAgent:
             },
             headers=headers,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # ``raise_for_status()`` raises ``HTTPStatusError`` with only the
+            # status line. The eval's no_response gate then shows just
+            # "HTTPStatusError: ..." with no clue about the server's reply.
+            # Surface the response body (truncated) so the JSON summary
+            # actually says *why* the request failed.
+            snippet = resp.text[:400].replace("\n", " ")
+            raise RuntimeError(
+                f"/chat returned {resp.status_code}: {snippet}"
+            )
         body = resp.json()
         returned_conversation_id = body.get("conversation_id", request.conversation_id)
         self._conversation_ids.setdefault(request.conversation_id, returned_conversation_id)
