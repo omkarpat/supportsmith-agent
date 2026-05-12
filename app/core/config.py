@@ -1,10 +1,10 @@
 """Application settings."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -96,7 +96,12 @@ class Settings(BaseSettings):
         repr=False,
         validation_alias=AliasChoices("SUPPORTSMITH_ADMIN_API_KEY"),
     )
-    allowed_ingestion_hosts: tuple[str, ...] = Field(
+    # ``NoDecode`` keeps pydantic-settings from JSON-decoding the env value.
+    # Without it, ``SUPPORTSMITH_ALLOWED_INGESTION_HOSTS=knotch.com`` is
+    # treated as JSON, fails to parse, and crashes ``get_settings()``. The
+    # ``_split_hosts`` validator then turns the comma-separated string into
+    # the canonical tuple.
+    allowed_ingestion_hosts: Annotated[tuple[str, ...], NoDecode] = Field(
         default=(),
         validation_alias=AliasChoices("SUPPORTSMITH_ALLOWED_INGESTION_HOSTS"),
     )
