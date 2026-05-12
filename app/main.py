@@ -23,6 +23,7 @@ from app.retrieval.website_classifier import (
     WebsiteLLMConfig,
     WebsitePageClassifier,
 )
+from app.web import router as web_router
 
 EMBEDDING_DIMENSIONS = 1536
 
@@ -132,4 +133,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(conversations.router)
     app.include_router(website_ingestions.router)
+    app.include_router(web_router)
     return app

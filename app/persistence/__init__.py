@@ -7,6 +7,7 @@ LangSmith owns trace storage; the local DB only carries product state
 from app.persistence.conversations import (
     ConversationNotFoundError,
     ConversationRepository,
+    ConversationSummary,
 )
 from app.persistence.messages import (
     MessageRecord,
@@ -19,6 +20,7 @@ from app.persistence.messages import (
 __all__ = [
     "ConversationNotFoundError",
     "ConversationRepository",
+    "ConversationSummary",
     "MessageRecord",
     "MessageRepository",
     "MessageRole",

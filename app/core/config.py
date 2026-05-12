@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     compliance_max_completion_tokens: int = 512
     judge_max_completion_tokens: int = 1024
 
+    api_bearer_token: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("SUPPORTSMITH_API_BEARER_TOKEN"),
+    )
     firecrawl_api_key: str | None = Field(
         default=None,
         repr=False,
@@ -86,23 +91,18 @@ class Settings(BaseSettings):
             "FIRECRAWL_API_KEY",
         ),
     )
-    api_bearer_token: str | None = Field(
-        default=None,
-        repr=False,
-        validation_alias=AliasChoices("SUPPORTSMITH_API_BEARER_TOKEN",),
-    )
     admin_api_key: str | None = Field(
         default=None,
         repr=False,
-        validation_alias=AliasChoices("SUPPORTSMITH_ADMIN_API_KEY",),
+        validation_alias=AliasChoices("SUPPORTSMITH_ADMIN_API_KEY"),
     )
     allowed_ingestion_hosts: tuple[str, ...] = Field(
         default=(),
-        validation_alias=AliasChoices("SUPPORTSMITH_ALLOWED_INGESTION_HOSTS",),
+        validation_alias=AliasChoices("SUPPORTSMITH_ALLOWED_INGESTION_HOSTS"),
     )
     allow_any_website_ingestion: bool = Field(
         default=False,
-        validation_alias=AliasChoices("SUPPORTSMITH_ALLOW_ANY_WEBSITE_INGESTION",),
+        validation_alias=AliasChoices("SUPPORTSMITH_ALLOW_ANY_WEBSITE_INGESTION"),
     )
     website_classifier_model: str = "gpt-5.5"
     website_classifier_reasoning_effort: Literal[

@@ -147,7 +147,6 @@ e2e_cases:
           escalate for the account-specific unlock action, rather than
           claiming to unlock the account itself.
         reference_docs:
-          - take_home_faq:help-my-account-is-locked-5b3330bf-031
           - take_home_faq:what-do-i-do-if-my-account-has-been-compromised-19ec14c8-008
         rubrics: [correctness, faithfulness, guardrail_success]
         expectations:
@@ -273,6 +272,50 @@ e2e_cases:
           verified: true
           max_tool_calls: 2
 
+  # 14. multi_turn — FAQ advice already failed; the agent must escalate
+  #     instead of re-citing the same row. Observed live: when the user
+  #     followed up with "my verification email isn't arriving", the
+  #     planner picked search_faq again and the synthesizer hedged with
+  #     "I don't have enough information" — neither the planner nor the
+  #     verifier promoted the turn to ``escalate``. This case pins the
+  #     desired behavior so prompt tuning has a measurable target.
+  - id: multi-turn-escalate-after-failed-faq
+    tags: [multi_turn, escalate, faq, regression]
+    conversation_id: eval-multi-turn-escalate-after-failed-faq
+    turns:
+      - user: "How do I verify my email address?"
+        reference_answer: |
+          Provide the email-verification FAQ guidance (open the verification
+          email and click the link; request a new one from
+          Settings > Account if it expired).
+        reference_docs:
+          - take_home_faq:verify-my-email-address-63019bc1-016
+        expected_tool_calls:
+          - name: search_faq
+        rubrics: [correctness, faithfulness, response_relevancy]
+        expectations:
+          source: faq
+          verified: true
+          max_tool_calls: 2
+      - user: "My link has expired and I'm not getting the new verification email."
+        reference_answer: |
+          The prior turn already gave the FAQ advice ("request a new email
+          from Settings > Account") and the user is now reporting that the
+          documented workaround did not work for them. The KB has no
+          guidance for undelivered verification emails, so the agent must
+          escalate to a human rather than re-cite the same FAQ row or
+          synthesize a hedged "I don't have enough information" reply.
+          Acceptable terminal: ``escalate_to_human`` with a reason that
+          names the failed delivery, producing source="escalate".
+        expected_tool_calls:
+          - name: escalate_to_human
+        rubrics:
+          [response_relevancy, guardrail_success, trajectory_quality, faithfulness]
+        expectations:
+          source: escalate
+          verified: true
+          max_tool_calls: 2
+
 retrieval_cases:
   - id: retrieval-password-reset
     query: "How do I reset my password?"
@@ -303,6 +346,5 @@ retrieval_cases:
   - id: retrieval-locked-account
     query: "My account is locked, what do I do?"
     reference_docs:
-      - take_home_faq:help-my-account-is-locked-5b3330bf-031
       - take_home_faq:what-do-i-do-if-my-account-has-been-compromised-19ec14c8-008
     k: 5

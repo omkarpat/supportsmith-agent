@@ -22,6 +22,12 @@ from app.retrieval.models import RetrievalResult
 
 
 class FakeDatabase:
+    # ``None`` so dependencies that ``raise HTTPException(503, ...)`` on a
+    # missing factory surface a clean 503 in tests instead of an
+    # AttributeError. Tests that need real persistence point at a Postgres
+    # URL and bypass this stub.
+    session_factory = None
+
     async def connect(self) -> None:
         return None
 
@@ -67,9 +73,14 @@ class FakeSupportSearch:
 
 
 def _test_settings() -> Settings:
+    # ``_env_file=None`` keeps the test settings hermetic. Otherwise
+    # pydantic-settings would read the developer's ``.env`` (e.g.
+    # SUPPORTSMITH_API_BEARER_TOKEN), which would silently install the
+    # bearer middleware and surprise tests that expect the open default.
     return Settings(
         environment="test",
         database_url="postgresql://supportsmith:supportsmith@localhost:55432/supportsmith_test",
+        _env_file=None,  # type: ignore[call-arg]
     )
 
 

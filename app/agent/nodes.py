@@ -715,6 +715,12 @@ async def finalize(state: GraphState, _ctx: NodeContext) -> dict[str, Any]:
 
 def _render_plan_prompt(state: GraphState) -> str:
     sections: list[str] = []
+    if state.compliance_precheck is not None:
+        sections.append(
+            "Compliance precheck: "
+            f"category={state.compliance_precheck.category}, "
+            f"allowed={state.compliance_precheck.allowed}"
+        )
     history = _render_prior_turns(state)
     if history:
         sections.append(f"Prior conversation:\n{history}")

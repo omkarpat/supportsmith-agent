@@ -10,11 +10,12 @@ command, not by this file.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from app.agent.harness import AgentRequest, AgentResponse
-from app.evals.runner import build_parser, load_cases
+from app.evals.runner import HttpAgent, build_parser, load_cases
 from app.evals.scoring import (
     PASS_THRESHOLD,
     Evidence,
@@ -330,6 +331,93 @@ def test_build_parser_defaults() -> None:
     assert args.target == "agent"
     assert args.model is None
     assert str(args.cases) == "evals/cases.yaml"
+
+
+class _FakeHttpResponse:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        status_code: int = 200,
+        text: str = "",
+    ) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _FakeHttpClient:
+    def __init__(self, response: _FakeHttpResponse | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._canned_response = response
+
+    async def post(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> _FakeHttpResponse:
+        self.calls.append({"path": path, "json": json, "headers": headers})
+        if self._canned_response is not None:
+            return self._canned_response
+        conversation_id = json.get("conversation_id") or "minted-conversation"
+        return _FakeHttpResponse(
+            {
+                "conversation_id": conversation_id,
+                "turn_number": len(self.calls),
+                "response": "ok",
+                "source": "agent",
+                "matched_questions": [],
+                "tools_used": [],
+                "verified": True,
+                "trace_id": "trace",
+                "cost": {},
+            }
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_http_agent_mints_then_resumes_api_conversation() -> None:
+    agent = HttpAgent("http://example.test", bearer_token="secret")
+    fake_client = _FakeHttpClient()
+    agent._client = fake_client
+
+    first = await agent.respond(AgentRequest(conversation_id="fixture-id", message="one"))
+    second = await agent.respond(AgentRequest(conversation_id="fixture-id", message="two"))
+
+    assert first.conversation_id == "minted-conversation"
+    assert second.conversation_id == "minted-conversation"
+    assert fake_client.calls[0]["json"]["conversation_id"] is None
+    assert fake_client.calls[1]["json"]["conversation_id"] == "minted-conversation"
+    assert fake_client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+
+
+async def test_http_agent_surfaces_status_and_body_on_4xx() -> None:
+    """A 4xx must raise with the response body in the message so the
+    no_response gate's reason field is actually diagnostic."""
+    agent = HttpAgent("http://example.test")
+    fake_client = _FakeHttpClient(
+        response=_FakeHttpResponse(
+            payload={"detail": "Conversation not found"},
+            status_code=404,
+            text='{"detail":"Conversation not found"}',
+        )
+    )
+    agent._client = fake_client
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await agent.respond(AgentRequest(conversation_id="x", message="y"))
+    assert "404" in str(exc_info.value)
+    assert "Conversation not found" in str(exc_info.value)
 
 
 def test_evidence_default_shape() -> None:

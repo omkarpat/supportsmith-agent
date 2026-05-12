@@ -1,13 +1,20 @@
-"""Bearer token + admin-API-key gates for the Phase 7 demo branch.
+"""Bearer-token gate for the public demo deployment + admin-API-key gate.
 
-The bearer token is a *demo* protection layer. When ``api_bearer_token`` is
-configured, every API route except ``/health`` requires
-``Authorization: Bearer <token>``. The token is compared with
-:func:`hmac.compare_digest` to avoid timing side channels and is never logged.
+The bearer token is a *demo* protection layer, not production auth. When
+``api_bearer_token`` is configured, every API route except a small public
+set requires ``Authorization: Bearer <token>``. The token is compared with
+:func:`hmac.compare_digest` to avoid timing side channels and is never
+logged.
 
-The admin gate is a second factor for ``/admin/*`` ingestion endpoints. It is
-required when ``admin_api_key`` is configured and is provided via either the
-``X-Admin-Api-Key`` header or an ``api_key`` query string parameter.
+The public set covers ``/health`` (so platform health checks keep working
+without a token) and the chat-UI demo console at ``/`` + ``/ui*`` (so a
+fresh visitor can load the page and paste a token; chat actions stay
+disabled until they do).
+
+The admin gate is a second factor for ``/admin/*`` ingestion endpoints. It
+is required when ``admin_api_key`` is configured and is provided via
+either the ``X-Admin-Api-Key`` header or an ``api_key`` query string
+parameter.
 """
 
 from __future__ import annotations
@@ -22,15 +29,24 @@ from starlette.types import ASGIApp
 
 from app.core.config import Settings
 
-PUBLIC_PATHS: frozenset[str] = frozenset({"/health"})
+PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/",
+        "/ui",
+        "/ui/assets/app.js",
+        "/ui/assets/styles.css",
+    }
+)
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     """Reject requests without the configured bearer token.
 
-    No-op when ``api_bearer_token`` is not set, so local development and the
-    test suite (which never sets the token) keep working unchanged. Mounted
-    early in the middleware stack so admin routes are always behind it.
+    No-op when ``api_bearer_token`` is not set, so local development and
+    the test suite (which never sets the token) keep working unchanged.
+    Mounted early in the middleware stack so admin routes are always
+    behind it.
     """
 
     def __init__(self, app: ASGIApp, *, token: str) -> None:
@@ -95,3 +111,12 @@ def _constant_time_eq(provided: str, expected: str) -> bool:
 
 
 AdminApiKey = Depends(require_admin_api_key)
+
+
+__all__ = [
+    "AdminApiKey",
+    "BearerTokenMiddleware",
+    "PUBLIC_PATHS",
+    "configure_security",
+    "require_admin_api_key",
+]
