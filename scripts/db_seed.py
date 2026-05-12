@@ -4,7 +4,8 @@ Run from the repo root::
 
     uv run --env-file .env supportsmith-seed
     uv run --env-file .env supportsmith-seed --input data/knowledge-base.json
-    uv run supportsmith-seed --fake-embeddings   # CI / tests; no API key
+    uv run --env-file .env supportsmith-seed --reset   # wipe seed-owned tables first
+    uv run supportsmith-seed --fake-embeddings         # CI / tests; no API key
 
 Defaults to live OpenAI embeddings so the seeded vectors match the model the
 live agent uses for queries. Pass ``--fake-embeddings`` for deterministic
@@ -20,6 +21,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import text
+
 from app.core.config import get_settings
 from app.db.session import create_engine, create_session_factory
 from app.llm.client import EmbeddingClient
@@ -33,6 +36,16 @@ from app.retrieval.sources.take_home_faq import load_take_home_faq
 DEFAULT_INPUT = Path("data/knowledge-base.json")
 EMBEDDING_DIMENSIONS = 1536
 
+# Tables that ``--reset`` truncates. ``alembic_version`` is intentionally
+# excluded so the schema head sticks across resets. Ordering doesn't matter
+# because ``CASCADE`` follows the FKs.
+_RESETTABLE_TABLES: tuple[str, ...] = (
+    "conversation_messages",
+    "conversations",
+    "escalations",
+    "support_documents",
+)
+
 
 async def seed(
     *,
@@ -40,8 +53,15 @@ async def seed(
     database_url: str,
     embedding_client: EmbeddingClient,
     embedding_model: str,
+    reset: bool = False,
 ) -> UpsertSummary:
-    """Load, embed, and upsert the take-home FAQ into ``support_documents``."""
+    """Load, embed, and upsert the take-home FAQ into ``support_documents``.
+
+    When ``reset=True``, truncate the seed-owned tables before upserting so
+    the resulting state is exactly what ``input_path`` describes — useful
+    when prior runs left rows with incompatible ``source`` values (e.g.
+    after switching branches).
+    """
     loaded = load_take_home_faq(input_path)
     summary = UpsertSummary(rejected=list(loaded.rejected), started_at=_utcnow())
 
@@ -50,6 +70,20 @@ async def seed(
     engine = create_engine(database_url)
     session_factory = create_session_factory(engine)
     try:
+        if reset:
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    text(
+                        "TRUNCATE TABLE "
+                        + ", ".join(_RESETTABLE_TABLES)
+                        + " RESTART IDENTITY CASCADE"
+                    )
+                )
+            print(
+                "[seed] reset: truncated "
+                + ", ".join(_RESETTABLE_TABLES)
+                + " (alembic_version preserved)"
+            )
         async with session_factory() as session, session.begin():
             repository = SupportDocumentRepository(session)
             for document in loaded.documents:
@@ -99,6 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
             "fake embedder for retrieval to behave consistently."
         ),
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "Truncate seed-owned tables (support_documents, conversations, "
+            "conversation_messages, escalations) before seeding. Schema is "
+            "preserved. Use when prior runs left rows incompatible with the "
+            "current branch's source/category types."
+        ),
+    )
     return parser
 
 
@@ -124,6 +168,7 @@ def main() -> None:
             database_url=settings.database_url,
             embedding_client=embedding_client,
             embedding_model=settings.embedding_model,
+            reset=args.reset,
         )
     )
     print(json.dumps(summary.model_dump(mode="json"), indent=2, default=str))

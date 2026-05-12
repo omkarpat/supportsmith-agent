@@ -137,11 +137,14 @@ def chat_client_factory(request: pytest.FixtureRequest) -> Iterator[Any]:
     # tracing off here so the test suite stays deterministic regardless of
     # what the dev's ``.env`` has set; the trace endpoints' 503 behavior is
     # the contract under test, not the live LangSmith integration.
+    # ``_env_file=None`` also keeps SUPPORTSMITH_API_BEARER_TOKEN from
+    # leaking in from ``.env`` and silently installing the bearer gate.
     settings = Settings(
         environment="test",
         database_url=DATABASE_URL,
         langsmith_tracing=False,
         langsmith_api_key=None,
+        _env_file=None,  # type: ignore[call-arg]
     )
     app = create_app(settings)
     test_client = TestClient(app)

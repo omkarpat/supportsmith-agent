@@ -63,9 +63,14 @@ class FakeSupportSearch:
 
 
 def _test_settings() -> Settings:
+    # ``_env_file=None`` keeps the test settings hermetic. Otherwise
+    # pydantic-settings would read the developer's ``.env`` (e.g.
+    # SUPPORTSMITH_API_BEARER_TOKEN), which would silently install the
+    # bearer middleware and surprise tests that expect the open default.
     return Settings(
         environment="test",
         database_url="postgresql://supportsmith:supportsmith@localhost:55432/supportsmith_test",
+        _env_file=None,  # type: ignore[call-arg]
     )
 
 

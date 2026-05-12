@@ -239,6 +239,40 @@ function buildMessageNode(msg) {
   return li;
 }
 
+function appendOptimisticUser(text) {
+  els.emptyState.hidden = true;
+  const li = document.createElement("li");
+  li.className = "msg msg--user msg--pending";
+  const bubble = document.createElement("div");
+  bubble.className = "msg__bubble";
+  bubble.textContent = text;
+  li.append(bubble);
+  els.messageList.append(li);
+  scrollMessagesToBottom();
+  return li;
+}
+
+function appendTypingIndicator() {
+  els.emptyState.hidden = true;
+  const li = document.createElement("li");
+  li.className = "msg msg--agent msg--typing";
+  const tag = document.createElement("span");
+  tag.className = "msg__role-tag";
+  tag.textContent = "agent";
+  li.append(tag);
+  const bubble = document.createElement("div");
+  bubble.className = "msg__bubble";
+  for (let i = 0; i < 3; i += 1) {
+    const dot = document.createElement("span");
+    dot.className = "typing-dot";
+    bubble.append(dot);
+  }
+  li.append(bubble);
+  els.messageList.append(li);
+  scrollMessagesToBottom();
+  return li;
+}
+
 function buildMetadataNode(msg) {
   if (msg.role === "user") return null;
   const meta = msg.metadata || {};
@@ -379,6 +413,8 @@ function startNewChat() {
 async function sendMessage(text) {
   if (!text || state.sending) return;
   setLoading(true);
+  appendOptimisticUser(text);
+  const typingNode = appendTypingIndicator();
   try {
     const body = { message: text };
     if (state.activeConversationId) {
@@ -392,11 +428,15 @@ async function sendMessage(text) {
       const data = await apiFetch(
         `/conversations/${encodeURIComponent(state.activeConversationId)}/messages`,
       );
+      // ``renderMessages`` replaces the whole list, so the optimistic user
+      // bubble and the typing indicator are swapped out for canonical rows
+      // (with metadata) in one paint.
       renderMessages(data?.messages ?? []);
     }
     setActiveHeader();
     await refreshSidebar();
   } catch (err) {
+    typingNode.remove();
     if (err instanceof TokenRequiredError) return;
     showBanner(`Chat failed: ${err.message}`, "error");
   } finally {
