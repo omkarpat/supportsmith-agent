@@ -15,7 +15,7 @@ from app.agent.tools import (
     GeneralKnowledgeLookupOutput,
     GetFAQByCategoryOutput,
     RefuseOutput,
-    SearchFAQOutput,
+    SearchKBOutput,
     ToolDependencies,
     ToolRegistry,
 )
@@ -38,22 +38,28 @@ class _FakeSearch:
         limit: int = 5,
         category: str | None = None,
         min_score: float | None = None,
+        sources: list[str] | None = None,
+        qualities: list[str] | None = None,
     ) -> list[RetrievalResult]:
         self.last_kwargs = {
             "limit": limit,
             "category": category,
             "min_score": min_score,
+            "sources": list(sources) if sources is not None else None,
             "embedding_dims": len(embedding),
         }
-        if category is None:
-            return self.canned[:limit]
-        return [r for r in self.canned if r.category == category][:limit]
+        results = self.canned
+        if category is not None:
+            results = [r for r in results if r.category == category]
+        if sources is not None:
+            results = [r for r in results if r.source in sources]
+        return results[:limit]
 
 
 def _result(**overrides: Any) -> RetrievalResult:
     base: dict[str, Any] = {
         "external_id": "take_home_faq:reset-password-001",
-        "source": "take_home_faq",
+        "source": "faq",
         "title": "Reset password",
         "content": "Q: ...\n\nA: ...",
         "source_url": None,
@@ -82,26 +88,46 @@ def _registry(
     return ToolRegistry(deps), search, fake_llm
 
 
-async def test_search_faq_validates_args_and_returns_typed_results() -> None:
+async def test_search_kb_validates_args_and_returns_typed_results() -> None:
     registry, search, _ = _registry()
 
-    output = await registry.run("search_faq", {"query": "reset password", "limit": 3})
+    output = await registry.run("search_kb", {"query": "reset password", "limit": 3})
 
-    assert isinstance(output, SearchFAQOutput)
+    assert isinstance(output, SearchKBOutput)
     assert output.results
     assert search.last_kwargs == {
         "limit": 3,
         "category": None,
         "min_score": None,
+        "sources": None,
         "embedding_dims": 1536,
     }
 
 
-async def test_search_faq_rejects_invalid_args() -> None:
+async def test_search_kb_filters_by_source() -> None:
+    registry, search, _ = _registry(
+        canned_results=[
+            _result(external_id="faq-1", source="faq"),
+            _result(external_id="web-1", source="website", source_url="https://x/y"),
+        ]
+    )
+
+    output = await registry.run(
+        "search_kb",
+        {"query": "knotch customers", "sources": ["website"], "limit": 3},
+    )
+
+    assert isinstance(output, SearchKBOutput)
+    assert search.last_kwargs is not None
+    assert search.last_kwargs["sources"] == ["website"]
+    assert all(result.source == "website" for result in output.results)
+
+
+async def test_search_kb_rejects_invalid_args() -> None:
     registry, _, _ = _registry()
 
     with pytest.raises(ValueError):
-        await registry.run("search_faq", {"query": "", "limit": 3})
+        await registry.run("search_kb", {"query": "", "limit": 3})
 
 
 async def test_get_faq_by_category_filters_results() -> None:
@@ -185,7 +211,7 @@ async def test_unknown_tool_raises() -> None:
 def test_tool_input_schemas_are_strict() -> None:
     registry, _, _ = _registry()
 
-    schema = registry.input_schema("search_faq")
+    schema = registry.input_schema("search_kb")
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False

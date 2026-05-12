@@ -26,8 +26,8 @@ def _plan(intent: str, *, tool_name: str | None = None, **arguments: object) -> 
     )
 
 
-def _synth(text: str, *, cited_titles: list[str] | None = None) -> str:
-    return json.dumps({"text": text, "cited_titles": cited_titles or []})
+def _synth(text: str, *, cited_chunk_ids: list[int] | None = None) -> str:
+    return json.dumps({"text": text, "cited_chunk_ids": cited_chunk_ids or []})
 
 
 async def test_chat_routes_ambiguous_message_through_clarify_tool(
@@ -56,7 +56,7 @@ async def test_chat_routes_ambiguous_message_through_clarify_tool(
     assert "more about what you need" in response.response.lower()
 
 
-async def test_chat_routes_password_reset_through_search_faq(
+async def test_chat_routes_password_reset_through_search_kb(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.conftest import faq_result
@@ -65,10 +65,10 @@ async def test_chat_routes_password_reset_through_search_faq(
     harness = build_support_agent_harness(
         monkeypatch,
         llm_responses=[
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
             _synth(
                 "Go to Settings > Security and select Change Password.",
-                cited_titles=[title],
+                cited_chunk_ids=[0],
             ),
         ],
         canned_search_results=[
@@ -88,7 +88,7 @@ async def test_chat_routes_password_reset_through_search_faq(
 
     assert response.conversation_id == "demo"
     assert response.source == "faq"
-    assert response.tools_used == ["search_faq"]
+    assert response.tools_used == ["search_kb"]
     assert response.matched_questions == [title]
     assert response.response == "Go to Settings > Security and select Change Password."
     assert title not in response.response

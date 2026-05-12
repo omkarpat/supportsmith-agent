@@ -67,8 +67,8 @@ def _plan(intent: str, *, tool_name: str | None = None, **arguments: object) -> 
     )
 
 
-def _synth(text: str, *, cited_titles: list[str] | None = None) -> str:
-    return json.dumps({"text": text, "cited_titles": cited_titles or []})
+def _synth(text: str, *, cited_chunk_ids: list[int] | None = None) -> str:
+    return json.dumps({"text": text, "cited_chunk_ids": cited_chunk_ids or []})
 
 
 def _build_scripted_agent(
@@ -206,8 +206,8 @@ def test_chat_without_id_mints_persisted_conversation(
     agent, _ = _build_scripted_agent(
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Go to Settings > Security.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Go to Settings > Security.", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded"),
             compliance_decision_json(),
         ],
@@ -256,7 +256,7 @@ def test_chat_resume_loads_prior_context_and_increments_turn(
 
     Turn 1: agent asks for clarification.
     Turn 2: agent should see turn 1 in the rendered prior conversation
-    when planning, and routes to search_faq this time.
+    when planning, and routes to search_kb this time.
     """
     title = "What steps do I take to reset my password?"
     agent, llm = _build_scripted_agent(
@@ -273,8 +273,8 @@ def test_chat_resume_loads_prior_context_and_increments_turn(
             verifier_verdict_json(grounding="clarification"),
             # Turn 2: FAQ
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Go to Settings > Security.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Go to Settings > Security.", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded"),
             compliance_decision_json(),
         ],
@@ -388,8 +388,8 @@ def test_agent_message_metadata_carries_per_turn_status(chat_client_factory: Any
     agent, _ = _build_scripted_agent(
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Go to Settings > Security.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Go to Settings > Security.", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded"),
             compliance_decision_json(),
         ],
@@ -564,8 +564,8 @@ def _faq_agent() -> tuple[SupportAgent, ScriptedLLMClient]:
     return _build_scripted_agent(
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Go to Settings > Security.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Go to Settings > Security.", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded"),
             compliance_decision_json(),
         ],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,8 @@ from app.db.models import SupportDocument
 from app.retrieval.models import RetrievalResult, SeedSource
 
 DEFAULT_LIMIT = 5
+DEFAULT_QUALITY: tuple[str, ...] = ("trusted",)
+ALLOWED_SOURCES: frozenset[SeedSource] = frozenset(("faq", "website"))
 
 
 class SupportDocumentSearch:
@@ -24,11 +28,18 @@ class SupportDocumentSearch:
         limit: int = DEFAULT_LIMIT,
         category: str | None = None,
         min_score: float | None = None,
+        sources: Sequence[SeedSource] | None = None,
+        qualities: Sequence[str] | None = DEFAULT_QUALITY,
     ) -> list[RetrievalResult]:
         """Return the top-``limit`` documents ranked by cosine similarity.
 
         Cosine distance from pgvector lives in ``[0, 2]``; score is
         ``1 - distance`` so callers can apply a single ``min_score`` threshold.
+
+        ``sources`` filters by document source (``faq``, ``website``). ``None``
+        searches across all known sources. ``qualities`` filters by row quality
+        and defaults to ``("trusted",)`` so stale or low-quality rows never
+        reach the agent. Pass an empty tuple to disable the quality filter.
         """
         if limit < 1:
             raise ValueError("limit must be >= 1")
@@ -42,6 +53,10 @@ class SupportDocumentSearch:
         )
         if category is not None:
             stmt = stmt.where(SupportDocument.category == category)
+        if sources is not None:
+            stmt = stmt.where(SupportDocument.source.in_(list(sources)))
+        if qualities:
+            stmt = stmt.where(SupportDocument.quality.in_(list(qualities)))
 
         result = await self.session.execute(stmt)
         results: list[RetrievalResult] = []
@@ -84,6 +99,8 @@ def _to_retrieval_result(
 
 
 def _validated_source(value: str) -> SeedSource:
-    if value != "take_home_faq":
-        raise ValueError(f"Unexpected source value in support_documents: {value!r}")
-    return "take_home_faq"
+    if value == "faq":
+        return "faq"
+    if value == "website":
+        return "website"
+    raise ValueError(f"Unexpected source value in support_documents: {value!r}")

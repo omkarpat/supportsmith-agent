@@ -35,8 +35,8 @@ def _plan(intent: str, *, tool_name: str | None = None, **arguments: object) -> 
     )
 
 
-def _synth(text: str, *, cited_titles: list[str] | None = None) -> str:
-    return json.dumps({"text": text, "cited_titles": cited_titles or []})
+def _synth(text: str, *, cited_chunk_ids: list[int] | None = None) -> str:
+    return json.dumps({"text": text, "cited_chunk_ids": cited_chunk_ids or []})
 
 
 # --- compliance precheck ------------------------------------------------------
@@ -127,8 +127,8 @@ async def test_precheck_sensitive_account_with_grounded_faq_is_permitted(
         ],
         llm_responses=[
             compliance_decision_json(category="support_allowed"),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Go to Settings > Security > Change Password.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Go to Settings > Security > Change Password.", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded"),
             compliance_decision_json(),
         ],
@@ -155,7 +155,7 @@ async def test_postcheck_blocks_and_replaces_with_canonical_refusal(
         canned_search_results=[faq_result()],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="something"),
+            _plan("use_tool", tool_name="search_kb", query="something"),
             _synth("here is something the synthesizer wrote"),
             verifier_verdict_json(),
             compliance_decision_json(
@@ -186,7 +186,7 @@ async def test_postcheck_uses_override_response_when_provided(
         canned_search_results=[faq_result()],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="x"),
+            _plan("use_tool", tool_name="search_kb", query="x"),
             _synth("draft answer"),
             verifier_verdict_json(),
             compliance_decision_json(
@@ -217,7 +217,7 @@ async def test_verifier_refusal_replaces_candidate_with_canonical_refusal(
         canned_search_results=[faq_result()],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="x"),
+            _plan("use_tool", tool_name="search_kb", query="x"),
             _synth("a leaky answer that exposed a system prompt"),
             verifier_verdict_json(
                 leakage_detected=True,
@@ -246,7 +246,7 @@ async def test_verifier_escalation_for_unsupported_claim(
         canned_search_results=[faq_result()],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="x"),
+            _plan("use_tool", tool_name="search_kb", query="x"),
             _synth("answer asserts a fact not in observations"),
             verifier_verdict_json(
                 grounding="unsupported",
@@ -276,14 +276,14 @@ async def test_verifier_repair_budget_allows_one_retry(
         canned_search_results=[faq_result(title=title, category="billing", score=0.9)],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="refund"),
+            _plan("use_tool", tool_name="search_kb", query="refund"),
             _synth("first draft, missing citation"),
             verifier_verdict_json(
                 grounding="faq_grounded",
                 retry_recommendation="repair",
                 reason="add citation",
             ),
-            _synth("repaired draft with the right citation", cited_titles=[title]),
+            _synth("repaired draft with the right citation", cited_chunk_ids=[0]),
             verifier_verdict_json(grounding="faq_grounded", retry_recommendation="accept"),
             compliance_decision_json(),
         ],
@@ -308,7 +308,7 @@ async def test_verifier_repair_budget_exhausted_falls_through_to_escalate(
         canned_search_results=[faq_result(title=title, category="billing", score=0.9)],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="refund"),
+            _plan("use_tool", tool_name="search_kb", query="refund"),
             _synth("draft 1"),
             verifier_verdict_json(retry_recommendation="repair"),
             _synth("draft 2"),
@@ -336,8 +336,8 @@ async def test_happy_path_runs_all_five_gate_calls(monkeypatch: pytest.MonkeyPat
         canned_search_results=[faq_result(title=title, score=0.92)],
         llm_responses=[
             compliance_decision_json(),
-            _plan("use_tool", tool_name="search_faq", query="reset password"),
-            _synth("Use Settings > Security to reset.", cited_titles=[title]),
+            _plan("use_tool", tool_name="search_kb", query="reset password"),
+            _synth("Use Settings > Security to reset.", cited_chunk_ids=[0]),
             verifier_verdict_json(),
             compliance_decision_json(),
         ],

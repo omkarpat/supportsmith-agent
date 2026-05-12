@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,7 @@ class SupportDocumentRepository:
                 content=document.content,
                 content_hash=new_hash,
                 category=document.category,
+                quality="trusted",
                 metadata_=document.metadata,
                 embedding=embedding,
             )
@@ -70,6 +71,7 @@ class SupportDocumentRepository:
                     "content": document.content,
                     "content_hash": new_hash,
                     "category": document.category,
+                    "quality": "trusted",
                     "metadata": document.metadata,
                     "embedding": embedding,
                 },
@@ -82,6 +84,43 @@ class SupportDocumentRepository:
         """Return every persisted document. Used by tests and inspection tools."""
         result = await self.session.execute(select(SupportDocument))
         return result.scalars().all()
+
+    async def fetch_website_external_ids(self, site_name: str) -> list[str]:
+        """Return the external_ids previously stored for one website source."""
+        stmt = select(SupportDocument.external_id).where(
+            SupportDocument.source == "website",
+            SupportDocument.metadata_["site_name"].astext == site_name,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def mark_website_chunks_stale(
+        self,
+        *,
+        site_name: str,
+        keep_external_ids: Sequence[str],
+    ) -> int:
+        """Mark previously ingested website chunks not in ``keep_external_ids`` stale.
+
+        Returns the number of rows updated. Stale rows are excluded from the
+        default search query because :class:`SupportDocumentSearch` filters on
+        ``quality="trusted"``.
+        """
+        stmt = (
+            update(SupportDocument)
+            .where(
+                SupportDocument.source == "website",
+                SupportDocument.metadata_["site_name"].astext == site_name,
+                SupportDocument.external_id.notin_(list(keep_external_ids)),
+                SupportDocument.quality == "trusted",
+            )
+            .values(quality="stale")
+        )
+        result = await self.session.execute(stmt)
+        # ``CursorResult.rowcount`` is the typed accessor for affected rows;
+        # the SQLAlchemy stub for the base ``Result`` doesn't expose it.
+        rowcount = getattr(result, "rowcount", 0) or 0
+        return int(rowcount)
 
     async def _fetch_by_external_id(self, external_id: str) -> SupportDocument | None:
         result = await self.session.execute(

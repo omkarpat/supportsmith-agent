@@ -156,6 +156,7 @@ def _project_source(candidate: CandidateAnswer | None) -> AgentSource:
     mapping: dict[str, AgentSource] = {
         "agent": "agent",
         "faq": "faq",
+        "website": "website",
         "general": "general",
         "clarify": "clarify",
         "escalate": "escalate",

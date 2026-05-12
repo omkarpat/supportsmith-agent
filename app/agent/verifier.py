@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 GroundingLabel = Literal[
     "faq_grounded",
+    "website_grounded",
     "general_marked",
     "clarification",
     "escalation",

@@ -23,6 +23,7 @@ from app.agent.compliance import ComplianceAgent, is_hard_block
 from app.agent.policy import CANONICAL_REFUSAL
 from app.agent.state import (
     CandidateAnswer,
+    CitedChunk,
     GraphState,
     NodeName,
     Plan,
@@ -37,7 +38,7 @@ from app.agent.tools import (
     GeneralKnowledgeLookupOutput,
     GetFAQByCategoryOutput,
     RefuseOutput,
-    SearchFAQOutput,
+    SearchKBOutput,
     ToolRegistry,
 )
 from app.agent.verifier import VerifierOutput
@@ -50,6 +51,9 @@ from app.llm.client import (
 )
 from app.llm.openai import LLMProviderError
 from app.prompts import load_prompt
+
+MAX_CHUNK_CONTENT_CHARS = 1400
+MAX_CHUNKS_FOR_SYNTHESIS = 8
 
 
 @dataclass(frozen=True)
@@ -106,12 +110,12 @@ _SYNTHESIS_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "text": {"type": "string"},
-        "cited_titles": {
+        "cited_chunk_ids": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "integer", "minimum": 0},
         },
     },
-    "required": ["text", "cited_titles"],
+    "required": ["text", "cited_chunk_ids"],
 }
 
 
@@ -121,7 +125,7 @@ class _SynthesisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str
-    cited_titles: list[str] = []
+    cited_chunk_ids: list[int] = []
 
 
 _VERIFIER_SCHEMA: dict[str, Any] = {
@@ -133,6 +137,7 @@ _VERIFIER_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": [
                 "faq_grounded",
+                "website_grounded",
                 "general_marked",
                 "clarification",
                 "escalation",
@@ -195,7 +200,7 @@ def _output_to_dict(output: object) -> dict[str, Any]:
     if isinstance(
         output,
         (
-            SearchFAQOutput,
+            SearchKBOutput,
             GetFAQByCategoryOutput,
             AskUserClarificationOutput,
             GeneralKnowledgeLookupOutput,
@@ -334,12 +339,12 @@ async def observe(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         rationale = f"terminal observation from {last.tool_name}; route to synthesize"
     elif not last.succeeded:
         rationale = "tool failed; route back to plan to recover"
-    elif last.tool_name == "search_faq":
+    elif last.tool_name == "search_kb":
         results = last.output.get("results", [])
         if results and float(results[0].get("score", 0.0)) >= 0.4:
-            rationale = "search_faq returned a confident match; ready to synthesize"
+            rationale = "search_kb returned a confident match; ready to synthesize"
         else:
-            rationale = "search_faq low-confidence; route back to plan for fallback"
+            rationale = "search_kb low-confidence; route back to plan for fallback"
     else:
         rationale = f"{last.tool_name} produced output; ready to synthesize"
 
@@ -352,10 +357,13 @@ async def observe(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
 async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     """Compose the final answer using the chat model and observation context.
 
+    Chunk-id citation flow: retrieval observations are numbered 0..N and shown
+    to the synthesizer. The LLM cites by id only, never by URL or title — the
+    post-synth renderer looks each cited id up deterministically so URLs are
+    not LLM-generated.
+
     Short-circuit: when the planner picked the ``refuse`` tool, skip the LLM
-    call and stamp :data:`CANONICAL_REFUSAL` directly. The doc requires one
-    refusal string for all refusals, and the ``refuse`` tool's output is
-    just ``{reason: ...}`` — there is nothing for the synthesizer to compose.
+    call and stamp :data:`CANONICAL_REFUSAL` directly.
     """
     started = _now()
 
@@ -364,6 +372,7 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         candidate = CandidateAnswer(
             text=CANONICAL_REFUSAL,
             citations=[],
+            cited_chunks=[],
             source="refuse",
         )
         event = _make_event(
@@ -377,13 +386,18 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
             "trace_events": [*state.trace_events, event],
         }
 
-    rendered_observations = _render_observations(state)
+    chunks = _collect_retrieval_chunks(state)
     rendered_history = _render_prior_turns(state)
+    rendered_observations = _render_observations(state)
+    rendered_chunks = _render_chunks_for_synthesis(chunks)
+
     synthesis_user_content_sections: list[str] = []
     if rendered_history:
         synthesis_user_content_sections.append(f"Prior conversation:\n{rendered_history}")
     synthesis_user_content_sections.append(f"User message: {state.user_message}")
-    synthesis_user_content_sections.append(f"Tool observations:\n{rendered_observations}")
+    if chunks:
+        synthesis_user_content_sections.append(f"Available chunks:\n{rendered_chunks}")
+    synthesis_user_content_sections.append(f"Other tool observations:\n{rendered_observations}")
 
     response = await ctx.llm.complete(
         ChatRequest(
@@ -402,15 +416,29 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
     )
 
     parsed = _parse_synthesis(response.content)
-    fetched_titles = _collect_fetched_titles(state)
-    # Cross-check: only surface titles the model declared *and* that retrieval
-    # actually returned, to defend against the synthesizer hallucinating a
-    # title that never came back from search.
-    cited_titles = [title for title in parsed.cited_titles if title in fetched_titles]
+    valid_ids = sorted({cid for cid in parsed.cited_chunk_ids if 0 <= cid < len(chunks)})
+    cited_chunks = [chunks[cid] for cid in valid_ids]
+
+    matched_questions: list[str] = []
+    website_links: list[tuple[str, str]] = []
+    for chunk in cited_chunks:
+        if chunk.source == "faq":
+            if chunk.title not in matched_questions:
+                matched_questions.append(chunk.title)
+        elif chunk.source == "website" and chunk.source_url:
+            entry = (chunk.title, chunk.source_url)
+            if entry not in website_links:
+                website_links.append(entry)
+
+    text = parsed.text.strip()
+    if website_links:
+        text = _append_website_citations(text, website_links)
+
     candidate = CandidateAnswer(
-        text=parsed.text.strip(),
-        citations=cited_titles,
-        source=_infer_source(state),
+        text=text,
+        citations=matched_questions,
+        cited_chunks=cited_chunks,
+        source=_infer_source(state, cited_chunks),
     )
     event = _make_event(
         node="synthesize",
@@ -418,12 +446,14 @@ async def synthesize(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         model=response.model,
         tokens=TraceTokenUsage(**response.usage.model_dump()),
         rationale=(
-            f"composed candidate answer; "
-            f"{len(cited_titles)} of {len(fetched_titles)} retrieved titles cited"
+            f"composed candidate answer; cited {len(cited_chunks)} of "
+            f"{len(chunks)} available chunks"
         ),
         payload={
-            "fetched_titles": fetched_titles,
-            "cited_titles": cited_titles,
+            "available_chunks": len(chunks),
+            "cited_chunk_ids": valid_ids,
+            "matched_questions": matched_questions,
+            "website_links": [list(item) for item in website_links],
             "source": candidate.source,
         },
     )
@@ -452,6 +482,7 @@ async def precheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         update["candidate_answer"] = CandidateAnswer(
             text=CANONICAL_REFUSAL,
             citations=[],
+            cited_chunks=[],
             source="compliance",
         )
         update["halted_reason"] = f"compliance precheck blocked: {decision.category}"
@@ -492,11 +523,16 @@ async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         raise RuntimeError("verify called without a candidate_answer in state")
 
     rendered_observations = _render_observations(state)
+    rendered_cited_chunks = _render_chunks_for_synthesis(
+        state.candidate_answer.cited_chunks
+    )
     verifier_user_content = (
         f'User message: "{state.user_message}"\n\n'
         f"Candidate answer source label: {state.candidate_answer.source}\n\n"
         f"Candidate answer text:\n{state.candidate_answer.text}\n\n"
-        f"Tool observations:\n{rendered_observations}"
+        f"Cited chunks (the grounding evidence the synthesizer used):\n"
+        f"{rendered_cited_chunks}\n\n"
+        f"Tool observations (compact, may be truncated):\n{rendered_observations}"
     )
     response = await ctx.llm.complete(
         ChatRequest(
@@ -547,7 +583,12 @@ async def verify(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
         update["repair_attempts"] = state.repair_attempts + 1
     elif effective == "refuse":
         update["candidate_answer"] = state.candidate_answer.model_copy(
-            update={"text": CANONICAL_REFUSAL, "source": "refuse", "citations": []}
+            update={
+                "text": CANONICAL_REFUSAL,
+                "source": "refuse",
+                "citations": [],
+                "cited_chunks": [],
+            }
         )
     elif effective == "escalate":
         update["candidate_answer"] = state.candidate_answer.model_copy(
@@ -623,7 +664,12 @@ async def postcheck(state: GraphState, ctx: NodeContext) -> dict[str, Any]:
             else CANONICAL_REFUSAL
         )
         update["candidate_answer"] = state.candidate_answer.model_copy(
-            update={"text": replacement_text, "source": "compliance", "citations": []}
+            update={
+                "text": replacement_text,
+                "source": "compliance",
+                "citations": [],
+                "cited_chunks": [],
+            }
         )
         override_applied = True
         rationale = f"postcheck blocked ({decision.category}); applied override"
@@ -726,19 +772,59 @@ def _compact(value: Any) -> str:
     return text
 
 
-def _collect_fetched_titles(state: GraphState) -> list[str]:
-    """Return every distinct FAQ title returned by successful search observations."""
-    titles: list[str] = []
+def _collect_retrieval_chunks(state: GraphState) -> list[CitedChunk]:
+    """Build a numbered, deduplicated chunk list from retrieval observations."""
+    seen: set[str] = set()
+    chunks: list[CitedChunk] = []
     for obs in state.observations:
         if not obs.succeeded:
             continue
-        if obs.tool_name not in {"search_faq", "get_faq_by_category"}:
+        if obs.tool_name not in {"search_kb", "get_faq_by_category"}:
             continue
         for hit in obs.output.get("results", []):
-            title = hit.get("title")
-            if title and title not in titles:
-                titles.append(title)
-    return titles
+            external_id = str(hit.get("external_id") or "")
+            if not external_id or external_id in seen:
+                continue
+            source_value = hit.get("source")
+            if source_value not in {"faq", "website"}:
+                continue
+            content = str(hit.get("content", ""))
+            if len(content) > MAX_CHUNK_CONTENT_CHARS:
+                content = content[: MAX_CHUNK_CONTENT_CHARS - 3] + "..."
+            chunks.append(
+                CitedChunk(
+                    chunk_id=len(chunks),
+                    external_id=external_id,
+                    source=source_value,
+                    title=str(hit.get("title") or ""),
+                    content=content,
+                    source_url=hit.get("source_url"),
+                )
+            )
+            seen.add(external_id)
+            if len(chunks) >= MAX_CHUNKS_FOR_SYNTHESIS:
+                return chunks
+    return chunks
+
+
+def _render_chunks_for_synthesis(chunks: list[CitedChunk]) -> str:
+    if not chunks:
+        return "(no chunks retrieved)"
+    blocks: list[str] = []
+    for chunk in chunks:
+        header_bits = [f"id={chunk.chunk_id}", f"source={chunk.source}", f'title="{chunk.title}"']
+        if chunk.source_url:
+            header_bits.append(f"url={chunk.source_url}")
+        blocks.append(f"[{chunk.chunk_id}] {' '.join(header_bits)}\n{chunk.content.strip()}")
+    return "\n\n".join(blocks)
+
+
+def _append_website_citations(text: str, links: list[tuple[str, str]]) -> str:
+    if not links:
+        return text
+    formatted = ", ".join(f"[{title}]({url})" for title, url in links)
+    separator = "\n\n" if text.strip() else ""
+    return f"{text.rstrip()}{separator}Sources: {formatted}"
 
 
 def _parse_synthesis(content: str) -> _SynthesisOutput:
@@ -766,12 +852,24 @@ def _parse_verifier(content: str) -> VerifierOutput:
 
 def _infer_source(
     state: GraphState,
-) -> Literal["faq", "general", "clarify", "escalate", "refuse", "agent"]:
+    cited_chunks: list[CitedChunk],
+) -> Literal[
+    "faq",
+    "website",
+    "general",
+    "clarify",
+    "escalate",
+    "refuse",
+    "compliance",
+    "agent",
+]:
+    if cited_chunks:
+        if any(chunk.source == "website" for chunk in cited_chunks):
+            return "website"
+        return "faq"
     last = state.observations[-1] if state.observations else None
     if last is None:
         return "agent"
-    if last.tool_name in {"search_faq", "get_faq_by_category"}:
-        return "faq"
     if last.tool_name == "general_knowledge_lookup":
         return "general"
     if last.tool_name == "ask_user_clarification":

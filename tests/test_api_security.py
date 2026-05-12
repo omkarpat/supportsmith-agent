@@ -1,13 +1,13 @@
-"""Bearer-token middleware tests for the Phase 8 demo gate.
+"""Bearer-token middleware + admin-API-key dependency tests.
 
 When ``SUPPORTSMITH_API_BEARER_TOKEN`` is configured, every API route
 must require a matching ``Authorization: Bearer <token>`` header — except
 ``/health`` (for platform health checks) and the static chat UI at ``/``
 and ``/ui*`` (so a visitor can load the page and paste a token).
 
-Phase 7 will additively layer the admin-API-key dependency on top of
-this; that case is not exercised here because the admin routes don't
-exist on this branch.
+Admin ingestion routes additionally require ``X-Admin-Api-Key`` when
+``SUPPORTSMITH_ADMIN_API_KEY`` is configured. When that key is not
+configured, those routes return 503 rather than running unauthenticated.
 """
 
 from __future__ import annotations
@@ -24,12 +24,17 @@ from tests.conftest import FakeDatabase
 
 
 def _settings(**overrides: object) -> Settings:
+    # ``_env_file=None`` keeps the test hermetic. ``model_validate`` would
+    # still trigger pydantic-settings env loading (via __init__) and pick
+    # up SUPPORTSMITH_API_BEARER_TOKEN / SUPPORTSMITH_ADMIN_API_KEY from
+    # the developer's ``.env``, which would silently switch the bearer or
+    # admin gates on for tests that expect them off.
     base: dict[str, object] = {
         "environment": "test",
         "database_url": "postgresql://supportsmith:supportsmith@localhost/test",
     }
     base.update(overrides)
-    return Settings.model_validate(base)
+    return Settings(_env_file=None, **base)  # type: ignore[call-arg,arg-type]
 
 
 @pytest.fixture
@@ -39,9 +44,18 @@ def secured_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         "from_settings",
         classmethod(lambda cls, settings: FakeDatabase()),
     )
-    app = create_app(_settings(api_bearer_token="demo-token"))
+    app = create_app(
+        _settings(
+            api_bearer_token="demo-token",
+            admin_api_key="admin-key",
+            allowed_ingestion_hosts="knotch.com",
+        )
+    )
     with TestClient(app) as client:
         yield client
+
+
+# --- bearer middleware --------------------------------------------------------
 
 
 def test_health_is_open_even_when_bearer_required(
@@ -118,7 +132,7 @@ def test_no_token_configured_means_no_enforcement(
         "from_settings",
         classmethod(lambda cls, settings: FakeDatabase()),
     )
-    app = create_app(_settings())  # no api_bearer_token
+    app = create_app(_settings())  # no api_bearer_token, no admin_api_key
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
@@ -142,3 +156,40 @@ def test_malformed_authorization_header_is_rejected(
             headers={"Authorization": header},
         )
         assert response.status_code == 401, header
+
+
+# --- admin api key gate -------------------------------------------------------
+
+
+def test_admin_route_returns_401_when_bearer_is_valid_but_admin_key_missing(
+    secured_client: TestClient,
+) -> None:
+    response = secured_client.get(
+        "/admin/website-ingestions",
+        headers={"Authorization": "Bearer demo-token"},
+    )
+    assert response.status_code == 401
+    assert "admin api key" in response.json()["detail"].lower()
+
+
+def test_admin_route_accepts_correct_admin_key(secured_client: TestClient) -> None:
+    response = secured_client.get(
+        "/admin/website-ingestions",
+        headers={"Authorization": "Bearer demo-token", "X-Admin-Api-Key": "admin-key"},
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_admin_route_503_when_admin_key_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        PostgresDatabase,
+        "from_settings",
+        classmethod(lambda cls, settings: FakeDatabase()),
+    )
+    app = create_app(_settings())  # no admin key, no bearer
+    with TestClient(app) as client:
+        response = client.get("/admin/website-ingestions")
+        assert response.status_code == 503

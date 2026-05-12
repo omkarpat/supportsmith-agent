@@ -63,12 +63,35 @@ def _truncate_support_documents() -> Any:
 def _seed(external_id: str, title: str, *, category: str = "security") -> SeedDocument:
     return SeedDocument(
         external_id=external_id,
-        source="take_home_faq",
+        source="faq",
         title=title,
         content=f"Q: {title}\n\nA: ...",
         embedding_text=title.lower(),
         category=category,
-        metadata={"ordinal": 0},
+        metadata={"ordinal": 0, "dataset": "take_home_faq"},
+    )
+
+
+def _website_seed(
+    external_id: str,
+    title: str,
+    *,
+    site_name: str = "knotch",
+    page_type: str = "case_study",
+) -> SeedDocument:
+    return SeedDocument(
+        external_id=external_id,
+        source="website",
+        title=title,
+        content=f"Body for {title}",
+        embedding_text=title.lower(),
+        source_url=f"https://{site_name}.com/case-studies/{title.lower().replace(' ', '-')}",
+        category=page_type,
+        metadata={
+            "site_name": site_name,
+            "page_type": page_type,
+            "customer_names": [title],
+        },
     )
 
 
@@ -163,3 +186,64 @@ async def test_search_lists_categories(session: AsyncSession) -> None:
     categories = await search.list_categories()
 
     assert categories == ["privacy", "security"]
+
+
+async def test_search_filters_by_source(session: AsyncSession) -> None:
+    repo = SupportDocumentRepository(session)
+    generator = _embedder()
+    faq = _seed("take_home_faq:reset-password-001", "Reset password")
+    site = _website_seed("website:knotch:abc:000", "Acme case study")
+    await repo.upsert(faq, embed=lambda d: _embed(generator, d))
+    await repo.upsert(site, embed=lambda d: _embed(generator, d))
+
+    search = SupportDocumentSearch(session)
+    query_embedding = await _embed(generator, site)
+
+    only_website = await search.search(query_embedding, limit=5, sources=["website"])
+    only_faq = await search.search(query_embedding, limit=5, sources=["faq"])
+    everything = await search.search(query_embedding, limit=5)
+
+    assert [r.source for r in only_website] == ["website"]
+    assert [r.source for r in only_faq] == ["faq"]
+    assert {r.source for r in everything} == {"faq", "website"}
+
+
+async def test_search_excludes_stale_website_rows(session: AsyncSession) -> None:
+    repo = SupportDocumentRepository(session)
+    generator = _embedder()
+    keep = _website_seed("website:knotch:keep:000", "Acme case study")
+    stale = _website_seed("website:knotch:stale:000", "Initech case study")
+    for document in (keep, stale):
+        await repo.upsert(document, embed=lambda d: _embed(generator, d))
+
+    marked = await repo.mark_website_chunks_stale(
+        site_name="knotch",
+        keep_external_ids=[keep.external_id],
+    )
+    assert marked == 1
+
+    search = SupportDocumentSearch(session)
+    results = await search.search(
+        await _embed(generator, stale),
+        limit=5,
+        sources=["website"],
+    )
+    assert [r.external_id for r in results] == [keep.external_id]
+
+
+async def test_mark_stale_is_scoped_to_one_site(session: AsyncSession) -> None:
+    repo = SupportDocumentRepository(session)
+    generator = _embedder()
+    knotch_doc = _website_seed("website:knotch:1:000", "Acme")
+    other_doc = _website_seed("website:other:1:000", "Beta", site_name="other")
+    for d in (knotch_doc, other_doc):
+        await repo.upsert(d, embed=lambda doc: _embed(generator, doc))
+
+    marked = await repo.mark_website_chunks_stale(
+        site_name="knotch",
+        keep_external_ids=[],
+    )
+    assert marked == 1
+
+    other_after = await repo.fetch_website_external_ids("other")
+    assert other_doc.external_id in other_after

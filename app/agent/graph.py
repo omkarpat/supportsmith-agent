@@ -166,7 +166,7 @@ def _route_from_observe(state: GraphState, ctx: NodeContext) -> str:
     if not last.succeeded:
         return "plan"
 
-    if last.tool_name == "search_faq":
+    if last.tool_name == "search_kb":
         results = last.output.get("results", [])
         if results and float(results[0].get("score", 0.0)) >= 0.4:
             return "synthesize"

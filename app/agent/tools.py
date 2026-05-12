@@ -23,12 +23,12 @@ from app.agent.topics import SUPPORT_TOPIC_EXAMPLES
 from app.llm.client import ChatMessage, ChatRequest, LLMClient
 from app.prompts import load_prompt
 from app.retrieval.embeddings import EmbeddingGenerator
-from app.retrieval.models import RetrievalResult
+from app.retrieval.models import RetrievalResult, SeedSource
 from app.retrieval.normalization import normalize_text
 from app.retrieval.search import SupportDocumentSearch
 
 ToolName = Literal[
-    "search_faq",
+    "search_kb",
     "get_faq_by_category",
     "ask_user_clarification",
     "general_knowledge_lookup",
@@ -37,7 +37,7 @@ ToolName = Literal[
 ]
 
 TOOL_NAMES: tuple[ToolName, ...] = (
-    "search_faq",
+    "search_kb",
     "get_faq_by_category",
     "ask_user_clarification",
     "general_knowledge_lookup",
@@ -51,14 +51,22 @@ DEFAULT_SEARCH_LIMIT = 5
 # --- input / output schemas ---------------------------------------------------
 
 
-class SearchFAQInput(BaseModel):
+class SearchKBInput(BaseModel):
+    """Search the support knowledge base (FAQ + ingested website chunks).
+
+    ``sources`` filters by document source: ``["faq"]`` to restrict to the
+    support FAQ, ``["website"]`` to restrict to ingested website content, or
+    omit to search across both.
+    """
+
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1)
     category_filter: str | None = None
+    sources: list[SeedSource] | None = None
     limit: int = Field(default=DEFAULT_SEARCH_LIMIT, ge=1, le=20)
 
 
-class SearchFAQOutput(BaseModel):
+class SearchKBOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     results: list[RetrievalResult]
 
@@ -122,7 +130,7 @@ class RefuseOutput(BaseModel):
 
 
 ToolOutput = (
-    SearchFAQOutput
+    SearchKBOutput
     | GetFAQByCategoryOutput
     | AskUserClarificationOutput
     | GeneralKnowledgeLookupOutput
@@ -159,7 +167,7 @@ class ToolRegistry:
     def __init__(self, dependencies: ToolDependencies) -> None:
         self.dependencies = dependencies
         self._executors: dict[ToolName, ToolExecutor] = {
-            "search_faq": _run_search_faq,
+            "search_kb": _run_search_kb,
             "get_faq_by_category": _run_get_faq_by_category,
             "ask_user_clarification": _run_ask_user_clarification,
             "general_knowledge_lookup": _run_general_knowledge_lookup,
@@ -167,7 +175,7 @@ class ToolRegistry:
             "refuse": _run_refuse,
         }
         self._input_models: dict[ToolName, type[BaseModel]] = {
-            "search_faq": SearchFAQInput,
+            "search_kb": SearchKBInput,
             "get_faq_by_category": GetFAQByCategoryInput,
             "ask_user_clarification": AskUserClarificationInput,
             "general_knowledge_lookup": GeneralKnowledgeLookupInput,
@@ -191,17 +199,18 @@ class ToolRegistry:
 # --- executors ----------------------------------------------------------------
 
 
-async def _run_search_faq(
-    inputs: SearchFAQInput,
+async def _run_search_kb(
+    inputs: SearchKBInput,
     deps: ToolDependencies,
-) -> SearchFAQOutput:
+) -> SearchKBOutput:
     embedding = await deps.embeddings.embed_many([normalize_text(inputs.query)])
     results = await deps.search.search(
         embedding[0],
         limit=inputs.limit,
         category=inputs.category_filter,
+        sources=inputs.sources,
     )
-    return SearchFAQOutput(results=results)
+    return SearchKBOutput(results=results)
 
 
 async def _run_get_faq_by_category(
@@ -215,6 +224,7 @@ async def _run_get_faq_by_category(
         seed_embedding[0],
         limit=inputs.limit,
         category=inputs.category,
+        sources=["faq"],
     )
     return GetFAQByCategoryOutput(category=inputs.category, results=results)
 

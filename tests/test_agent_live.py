@@ -52,7 +52,7 @@ async def test_password_reset_question_returns_grounded_faq_answer() -> None:
     """A real planner + retrieval + synthesizer turn lands the password-reset FAQ.
 
     Asserts the contract that matters end-to-end:
-    - The agent picks up the question and routes through search_faq
+    - The agent picks up the question and routes through search_kb
     - Live embeddings rank the password-reset FAQ as the top match
     - The synthesizer cites it via matched_questions (structured output)
     - The user-facing prose is non-empty and free of inline citation noise
@@ -81,8 +81,8 @@ async def test_password_reset_question_returns_grounded_faq_answer() -> None:
         await engine.dispose()
 
     assert response.source == "faq", f"expected source=faq, got {response.source}"
-    assert response.tools_used == ["search_faq"], (
-        f"expected tools_used=[search_faq], got {response.tools_used}"
+    assert response.tools_used == ["search_kb"], (
+        f"expected tools_used=[search_kb], got {response.tools_used}"
     )
     assert "What steps do I take to reset my password?" in response.matched_questions, (
         f"expected the password-reset FAQ in matched_questions, got {response.matched_questions}"
