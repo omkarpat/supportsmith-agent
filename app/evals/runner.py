@@ -162,7 +162,7 @@ class _SessionHoldingAgent:
 class HttpAgent:
     """Agent Protocol adapter that posts to a running ``/chat`` endpoint."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, *, bearer_token: str | None = None) -> None:
         try:
             import httpx
         except ModuleNotFoundError as exc:  # pragma: no cover - exercised in live runs
@@ -172,7 +172,9 @@ class HttpAgent:
             ) from exc
         self._httpx = httpx
         self._base_url = base_url.rstrip("/")
+        self._bearer_token = bearer_token
         self._client: Any | None = None
+        self._conversation_ids: dict[str, str] = {}
 
     async def _client_or_create(self) -> Any:
         if self._client is None:
@@ -181,17 +183,35 @@ class HttpAgent:
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
         client = await self._client_or_create()
+        actual_conversation_id = self._conversation_ids.get(request.conversation_id)
+        headers = (
+            {"Authorization": f"Bearer {self._bearer_token}"}
+            if self._bearer_token
+            else None
+        )
         resp = await client.post(
             "/chat",
             json={
-                "conversation_id": request.conversation_id,
+                "conversation_id": actual_conversation_id,
                 "message": request.message,
             },
+            headers=headers,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # ``raise_for_status()`` raises ``HTTPStatusError`` with only the
+            # status line. The eval's no_response gate then shows just
+            # "HTTPStatusError: ..." with no clue about the server's reply.
+            # Surface the response body (truncated) so the JSON summary
+            # actually says *why* the request failed.
+            snippet = resp.text[:400].replace("\n", " ")
+            raise RuntimeError(
+                f"/chat returned {resp.status_code}: {snippet}"
+            )
         body = resp.json()
+        returned_conversation_id = body.get("conversation_id", request.conversation_id)
+        self._conversation_ids.setdefault(request.conversation_id, returned_conversation_id)
         return AgentResponse(
-            conversation_id=body.get("conversation_id", request.conversation_id),
+            conversation_id=returned_conversation_id,
             turn_number=body.get("turn_number", 0),
             response=body.get("response", ""),
             source=body.get("source", "agent"),
@@ -293,7 +313,7 @@ async def _build_target(
     *, target: TargetChoice, base_url: str, settings: Settings
 ) -> Agent:
     if target == "api":
-        return HttpAgent(base_url)
+        return HttpAgent(base_url, bearer_token=settings.api_bearer_token)
     return await _build_agent_target(settings)
 
 

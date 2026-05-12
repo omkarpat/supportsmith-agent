@@ -147,7 +147,6 @@ e2e_cases:
           escalate for the account-specific unlock action, rather than
           claiming to unlock the account itself.
         reference_docs:
-          - take_home_faq:help-my-account-is-locked-5b3330bf-031
           - take_home_faq:what-do-i-do-if-my-account-has-been-compromised-19ec14c8-008
         rubrics: [correctness, faithfulness, guardrail_success]
         expectations:
@@ -347,6 +346,5 @@ retrieval_cases:
   - id: retrieval-locked-account
     query: "My account is locked, what do I do?"
     reference_docs:
-      - take_home_faq:help-my-account-is-locked-5b3330bf-031
       - take_home_faq:what-do-i-do-if-my-account-has-been-compromised-19ec14c8-008
     k: 5

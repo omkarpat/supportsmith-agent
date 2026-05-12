@@ -123,8 +123,16 @@ async def score_case(case: E2ECase, deps: E2ESuiteDeps) -> list[ScoreRecord]:
                 AgentRequest(conversation_id=case.conversation_id, message=turn.user)
             )
         except Exception as exc:  # pragma: no cover - exercised in live runs
+            # ``str(exc)`` is empty for a handful of httpx error classes
+            # (RemoteProtocolError, some timeouts), which makes the
+            # ``no_response`` gate's reason field useless ("agent raised: ").
+            # Always include the exception class so a flaky live run is
+            # diagnosable from the JSON summary alone.
+            error_text = f"{type(exc).__name__}: {exc}".rstrip(": ").strip()
             records.append(
-                _crash_record(case=case, turn=turn, turn_number=turn_number, error=str(exc))
+                _crash_record(
+                    case=case, turn=turn, turn_number=turn_number, error=error_text
+                )
             )
             break
 
